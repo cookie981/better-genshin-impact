@@ -849,8 +849,8 @@ namespace BetterGenshinImpact.GameTask.AutoFight
                     var skillAra = !skills
                         ? new Rect(image2.Width * 1800 / 1920, image2.Height * 817 / 1080,
                             image2.Width * 36 / 1920, image2.Height * 17 / 1080) //药物区域
-                        : new Rect(image2.Width * 940 / 1920, image2.Height * 1007 / 1080,
-                            image2.Width * 30 / 1920, image2.Height * 6 / 1080); //血条数字
+                        : new Rect(image2.Width * 928 / 1920, image2.Height * 1006 / 1080,
+                            image2.Width * 58 / 1920, image2.Height * 8 / 1080); //血条数字 986 1014
         
                     using var mask2 = OpenCvCommonHelper.Threshold(
                         image2.DeriveCrop(skillAra).SrcMat,
@@ -873,9 +873,18 @@ namespace BetterGenshinImpact.GameTask.AutoFight
                     if (numLabels2 > 2)
                     {
                         //识别到文字
-                        var replenishStringArea = image2.FindMulti(RecognitionObject.Ocr(skillAra));
-                        //如果replenishStringArea为空
-                        if (replenishStringArea.Count != 0) return Task.FromResult(true);
+                        if (skills)
+                        {
+                            Logger.LogWarning("测试1：{t},{t2}",numLabels2,skills);
+                            return Task.FromResult(true);
+                        }
+                        else
+                        {
+                            Logger.LogWarning("测试2：{t},{t2}",numLabels2,skills);
+                            var replenishStringArea = image2.FindMulti(RecognitionObject.Ocr(skillAra));
+                            //如果replenishStringArea为空
+                            if (replenishStringArea.Count != 0) return Task.FromResult(true);
+                        }
                     }
         
                     attempt++;

@@ -880,7 +880,7 @@ public class AutoFightTask : ISoloTask
                         #region check动作触发战斗结束检测
                         if (command.Method == Method.Check)
                         {
-                            fightEndFlag = await CheckFightFinish(delayTime, detectDelayTime);
+                            fightEndFlag = await CheckFightFinish(delayTime, detectDelayTime,cts2.Token,avatar);
                         }
                         #endregion
 
@@ -1348,6 +1348,7 @@ public class AutoFightTask : ISoloTask
         
         if (!paiMon2 && !AutoFightSkill.MedicinalCdAsync(Logger, true, 1,ct).Result)
         {
+            Logger.LogWarning("测试3：{t}",paiMon2);
             TaskControl.Logger.LogInformation("{t}：识别到战斗结束",_taskParam.FinishDetectConfig.EndModel? "快速模式" : "默认模式");
             //取消正在进行的换队
             FightEndTotoly  = true;
@@ -1633,7 +1634,7 @@ public class AutoFightTask : ISoloTask
                                             }
                                             else
                                             {
-                                                bool isSimilar = IsPixelSimilar(bloodtRect.SrcMat.At<Vec3b>(1, 1), ra.SrcMat.At<Vec3b>(880, 1009), 2);
+                                                bool isSimilar = IsPixelSimilar(bloodtRect.SrcMat.At<Vec3b>(1, 1), bloodtRect.SrcMat.At<Vec3b>(2, 2), 3);
                                                 // Logger.LogWarning("自动吃药：检测到血量颜色异常，是否与之前的血量颜色相似：{isSimilar}", isSimilar);
                                                 if (isSimilar)
                                                 {
