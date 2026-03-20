@@ -1345,10 +1345,12 @@ public class AutoFightTask : ISoloTask
                        IsYellow(pixelValue2.Item2, pixelValue2.Item1,
                            pixelValue2.Item0));
         }
+
+        var aa = AutoFightSkill.MedicinalCdAsync(Logger, true, 1, ct).Result;
         
-        if (!paiMon2 && !AutoFightSkill.MedicinalCdAsync(Logger, true, 1,ct).Result)
+        if (!paiMon2 && !aa)
         {
-            Logger.LogWarning("测试3：{t}",paiMon2);
+            Logger.LogWarning("测试3：{t},{t2}",paiMon2,aa);
             TaskControl.Logger.LogInformation("{t}：识别到战斗结束",_taskParam.FinishDetectConfig.EndModel? "快速模式" : "默认模式");
             //取消正在进行的换队
             FightEndTotoly  = true;

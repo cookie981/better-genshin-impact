@@ -861,8 +861,6 @@ namespace BetterGenshinImpact.GameTask.AutoFight
                     using var labels2 = new Mat();
                     using var stats2 = new Mat();
                     using var centroids2 = new Mat();
-                    
-                    
         
                     int numLabels2 = Cv2.ConnectedComponentsWithStats(mask2, labels2, stats2, centroids2,
                         connectivity: skills? PixelConnectivity.Connectivity4:PixelConnectivity.Connectivity8, ltype: MatType.CV_32S);
