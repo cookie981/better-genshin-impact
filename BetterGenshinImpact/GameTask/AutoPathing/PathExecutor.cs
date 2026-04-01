@@ -198,7 +198,7 @@ public class PathExecutor
                     
                     Waypoint? nextWaypoint = null;
                     double? nextDdistance = null;
-                    var last2Waypoints = false;
+                    //var last2Waypoints = false;
                     foreach (var waypoint in waypoints) // 一条路径
                     {
                         CurWaypoint = (waypoints.FindIndex(wps => wps == waypoint), waypoint);
