@@ -76,7 +76,7 @@ public class TpTask
         var gameHandle = TaskContext.Instance().GameHandle;
         var gameScreen = Screen.FromHandle(gameHandle);
         var gameScreenBounds = gameScreen.Bounds;
-        if (_tpConfig.MapMoveStepDivisor)Simulation.SendInput.Mouse.LeftButtonUp();
+        //if (_tpConfig.MapMoveStepDivisor)Simulation.SendInput.Mouse.LeftButtonUp();
         if (_tpConfig.MapZoomDistanceForce == 0)
         {
             _screenHeight = gameScreenBounds.Height > SystemControl.GetGameScreenRect(TaskContext.Instance().GameHandle).Height 
@@ -507,7 +507,7 @@ public class TpTask
             {
                 TaskControl.Logger.LogError("传送失败，重试 {I} 次", i + 1);
                 TaskControl.Logger.LogDebug(e, "传送失败，重试 {I} 次", i + 1);
-                if (_tpConfig.MapMoveStepDivisor)Simulation.SendInput.Mouse.LeftButtonUp();
+                //if (_tpConfig.MapMoveStepDivisor)Simulation.SendInput.Mouse.LeftButtonUp();
                 await Delay(1000, ct);
             }
         }
@@ -614,7 +614,7 @@ public class TpTask
             {
                 if (++exceptionTimes > (_tpConfig.MapMoveStepDivisor?1:2))
                 {
-                    if (_tpConfig.MapMoveStepDivisor)Simulation.SendInput.Mouse.LeftButtonUp();
+                    //if (_tpConfig.MapMoveStepDivisor)Simulation.SendInput.Mouse.LeftButtonUp();
                     throw new Exception("多次中心点识别失败，重新传送");
                 }
 
@@ -635,7 +635,7 @@ public class TpTask
                 
                     if (falseCount > 2)
                     {
-                        if (_tpConfig.MapMoveStepDivisor)Simulation.SendInput.Mouse.LeftButtonUp();
+                        //if (_tpConfig.MapMoveStepDivisor)Simulation.SendInput.Mouse.LeftButtonUp();
                         throw new Exception("地图亮度过低，重新传送");
                     }
 
@@ -949,7 +949,7 @@ public class TpTask
             var p = MapManager.GetMap(mapName, _mapMatchingMethod).GetBigMapPosition(ra.CacheGreyMat);
             if (p.IsEmpty())
             {
-                if (_tpConfig.MapMoveStepDivisor)Simulation.SendInput.Mouse.LeftButtonUp();
+                //if (_tpConfig.MapMoveStepDivisor)Simulation.SendInput.Mouse.LeftButtonUp();
                 throw new InvalidOperationException("识别大地图位置失败");
             }
 
@@ -965,7 +965,7 @@ public class TpTask
         }
         else
         {
-            if (_tpConfig.MapMoveStepDivisor)Simulation.SendInput.Mouse.LeftButtonUp();
+            //if (_tpConfig.MapMoveStepDivisor)Simulation.SendInput.Mouse.LeftButtonUp();
             throw new InvalidOperationException("当前不在地图界面");
         }
     }
