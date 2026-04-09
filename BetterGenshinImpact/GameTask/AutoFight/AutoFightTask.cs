@@ -513,11 +513,6 @@ public class AutoFightTask : ISoloTask
         //旋转次数
         var rotationLimit = _taskParam.RotaryFactor == 1 ? 500 : _taskParam.FinishDetectConfig.RotationMode && _taskParam.FinishDetectConfig.RotateFindEnemyEnabled ? 50 : 6;
         
-        //_taskParam.FinishDetectConfig.RetryDis大于150，设置为150，小于7，设置为6，否则取其值
-        _taskParam.FinishDetectConfig.RetryDis = _taskParam.FinishDetectConfig.RetryDis > 150
-            ? 150
-            : (_taskParam.FinishDetectConfig.RetryDis < 7 ? 6 : _taskParam.FinishDetectConfig.RetryDis);
-        
         // 战斗操作
         var fightTask = Task.Run(async () =>
         {
@@ -817,7 +812,7 @@ public class AutoFightTask : ISoloTask
                             try
                             {
                                 await AutoFightSeek.SeekAndFightAsync(TaskControl.Logger, detectDelayTime, delayTime,
-                                    cts2.Token, true, _taskParam.RotaryFactor,avatar,_taskParam.FinishDetectConfig.GoDistance,_taskParam.FinishDetectConfig.RetryDis);
+                                    cts2.Token, true, _taskParam.RotaryFactor,avatar,_taskParam.FinishDetectConfig.GoDistance);
                             }
                             catch (Exception ex)
                             {
@@ -1410,7 +1405,7 @@ public class AutoFightTask : ISoloTask
                 {
                     Task.Run(async () =>
                     {
-                        result = await AutoFightSeek.SeekAndFightAsync(TaskControl.Logger, detectDelayTime, delayTime, ct,false,_taskParam.RotaryFactor,avatar,_taskParam.FinishDetectConfig.GoDistance,_taskParam.FinishDetectConfig.RetryDis); 
+                        result = await AutoFightSeek.SeekAndFightAsync(TaskControl.Logger, detectDelayTime, delayTime, ct,false,_taskParam.RotaryFactor,avatar,_taskParam.FinishDetectConfig.GoDistance); 
                         AutoFightSeek.RotationCount = (result == null) ? 
                             AutoFightSeek.RotationCount + 1 :  0;
                     }, ct);  
@@ -1418,7 +1413,7 @@ public class AutoFightTask : ISoloTask
                 }
                 else
                 {
-                    result = await AutoFightSeek.SeekAndFightAsync(TaskControl.Logger, detectDelayTime, delayTime, ct,false,_taskParam.RotaryFactor,avatar,_taskParam.FinishDetectConfig.GoDistance,_taskParam.FinishDetectConfig.RetryDis); 
+                    result = await AutoFightSeek.SeekAndFightAsync(TaskControl.Logger, detectDelayTime, delayTime, ct,false,_taskParam.RotaryFactor,avatar,_taskParam.FinishDetectConfig.GoDistance); 
                     AutoFightSeek.RotationCount = (result == null) ? 
                         AutoFightSeek.RotationCount + 1 :  0;
                 }
