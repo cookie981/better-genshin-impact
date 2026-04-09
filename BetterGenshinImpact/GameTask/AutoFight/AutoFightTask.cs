@@ -86,7 +86,7 @@ public class AutoFightTask : ISoloTask
     {
         public int DelayTime = 1500;
         public int DetectDelayTime = 450;
-        public int FastCheckDelay = 100;
+        public int FastCheckDelay = 150;
         public Dictionary<string, int> DelayTimes = new();
         public double CheckTime = 5;
         public List<string> CheckNames = new();
@@ -413,7 +413,7 @@ public class AutoFightTask : ISoloTask
         var allCanBeSkipped = commandAvatarNames.All(a => canBeSkippedAvatarNames.Contains(a));
         
         var delayTime = _finishDetectConfig.DelayTime;
-        var detectDelayTime = _taskParam.FinishDetectConfig.EndModel&& _taskParam.FinishDetectConfig.RotateFindEnemyEnabled ? _finishDetectConfig.FastCheckDelay : _finishDetectConfig.DetectDelayTime;
+        var detectDelayTime = _taskParam.FinishDetectConfig.EndModel ? _finishDetectConfig.FastCheckDelay : _finishDetectConfig.DetectDelayTime;
 
         Avatar? guardianAvatar = null;
         if (!string.IsNullOrWhiteSpace(_taskParam.GuardianAvatar))
@@ -511,7 +511,7 @@ public class AutoFightTask : ISoloTask
         var predefinedlist = new List<string>() { "枫原万叶" ,"希诺宁"};
         
         //旋转次数
-        var rotationLimit = _taskParam.RotaryFactor == 1 ? 500 : _taskParam.FinishDetectConfig.RotationMode && _taskParam.FinishDetectConfig.RotateFindEnemyEnabled ? 50 : 6;
+        var rotationLimit = _taskParam.RotaryFactor == 1 ? 500 : _taskParam.FinishDetectConfig.RotationMode ? 50 : 6;
         
         // 战斗操作
         var fightTask = Task.Run(async () =>
@@ -661,15 +661,8 @@ public class AutoFightTask : ISoloTask
                                         var usePre = predefinedlist.Contains(avatarQ.Name);
                                         var useAContainsKey = useSkillListWithA.ContainsKey(num);
                                         var useA = (useAContainsKey && useSkillListWithA[num] > 0) || usePre;
-
-                                        if (_taskParam.FinishDetectConfig.RotationMode &&
-                                            _taskParam.FinishDetectConfig.RotateFindEnemyEnabled &&
-                                            CheckFightFinish(0, detectDelayTime, cts2.Token).Result)
-                                        {
-                                            FightEndTotoly  = true;
-                                            fightEndFlag = true;
-                                            break;
-                                        }
+                                        
+                                        if(_taskParam.FinishDetectConfig.RotationMode && await CheckFightFinish(0, detectDelayTime, cts2.Token)) break;
                                         
                                         if (avatarQ.TrySwitch(15))
                                         {
@@ -768,18 +761,11 @@ public class AutoFightTask : ISoloTask
                                                 {
                                                     // 确保最终释放资源
                                                     imageAfterBurst.Dispose();
-                                                    if (_taskParam.FinishDetectConfig.RotationMode &&
-                                                        _taskParam.FinishDetectConfig.RotateFindEnemyEnabled &&
-                                                        CheckFightFinish(0, detectDelayTime, cts2.Token).Result)
-                                                    {
-                                                        FightEndTotoly  = true;
-                                                        fightEndFlag = true;
-                                                    }
                                                 }
+
                                             }
                                             else
                                             {
-                                                FightEndTotoly  = true;
                                                 break;
                                             }
                                             if (guardianAvatar.IsSkillReady())
@@ -830,19 +816,7 @@ public class AutoFightTask : ISoloTask
                             Logger.LogDebug("跳过角色{command.Name} - {avatar.Name}", command.Name,avatar?.Name);
                             continue;
                         }
-
-                        if (_taskParam.AutoCombatEq)
-                        {
-                            if (_taskParam.FinishDetectConfig.RotationMode &&
-                                _taskParam.FinishDetectConfig.RotateFindEnemyEnabled &&
-                                CheckFightFinish(0, detectDelayTime, cts2.Token).Result)
-                            {
-                                FightEndTotoly  = true;
-                                fightEndFlag = true;
-                                break;
-                            }
-                            avatar?.TrySwitch(15);
-                        }
+                        if (_taskParam.AutoCombatEq)avatar?.TrySwitch(15);
                         #region 每个命令的跳过战斗判定
 
                         // 判断是否满足跳过条件:
@@ -901,32 +875,10 @@ public class AutoFightTask : ISoloTask
                         #region Q前寻敌处理
                         if (_finishDetectConfig.RotateFindEnemyEnabled && _taskParam.CheckBeforeBurst && (command.Method == Method.Burst || command.Args.Contains("q") || command.Args.Contains("Q")))
                         {
-                            if (_taskParam.FinishDetectConfig.RotationMode &&
-                                _taskParam.FinishDetectConfig.RotateFindEnemyEnabled)
-                            {
-                                if (CheckFightFinish(0, detectDelayTime, cts2.Token, avatar).Result)
-                                {
-                                    FightEndTotoly = true;
-                                    fightEndFlag = true;
-                                    break;
-                                }
-                            }
-                            else
-                            {
-                                fightEndFlag = await CheckFightFinish(delayTime, detectDelayTime,cts2.Token,avatar);
-                            }
+                            fightEndFlag = await CheckFightFinish(0, detectDelayTime, cts2.Token,avatar);
                         }
                         #endregion
 
-                        if (_taskParam.FinishDetectConfig.RotationMode &&
-                            _taskParam.FinishDetectConfig.RotateFindEnemyEnabled &&
-                            CheckFightFinish(0, detectDelayTime, cts2.Token,avatar).Result)
-                        {
-                            FightEndTotoly  = true;
-                            fightEndFlag = true;
-                            break;
-                        }
-                        
                         command.Execute(combatScenes, lastCommand);
                         //统计战斗人次
                         if (i == combatCommands.Count - 1 || command.Name != combatCommands[i + 1].Name)
@@ -937,20 +889,7 @@ public class AutoFightTask : ISoloTask
                         #region check动作触发战斗结束检测
                         if (command.Method == Method.Check)
                         {
-                            if (_taskParam.FinishDetectConfig.RotationMode &&
-                             _taskParam.FinishDetectConfig.RotateFindEnemyEnabled)
-                            {
-                                if (CheckFightFinish(0, detectDelayTime, cts2.Token, avatar).Result)
-                                {
-                                    FightEndTotoly = true;
-                                    fightEndFlag = true;
-                                    break;
-                                }
-                            }
-                            else
-                            {
-                                fightEndFlag = await CheckFightFinish(delayTime, detectDelayTime,cts2.Token,avatar);
-                            }
+                            fightEndFlag = await CheckFightFinish(delayTime, detectDelayTime,cts2.Token,avatar);
                         }
                         #endregion
 
@@ -979,34 +918,12 @@ public class AutoFightTask : ISoloTask
                                     // Logger.LogInformation($"延时检查为{delayTime}毫秒");
                                 }
 
-                                if (_taskParam.FinishDetectConfig.RotationMode &&
-                                    _taskParam.FinishDetectConfig.RotateFindEnemyEnabled)
-                                {
-                                    
-                                }
-                                else
-                                {
-                                    if (_taskParam.FinishDetectConfig.RotationMode &&
-                                        _taskParam.FinishDetectConfig.RotateFindEnemyEnabled)
-                                    {
-                                        if (CheckFightFinish(0, detectDelayTime, cts2.Token, avatar).Result)
-                                        {
-                                            FightEndTotoly = true;
-                                            fightEndFlag = true;
-                                            break;
-                                        }
-                                    }
-                                    else
-                                    {
-                                        fightEndFlag = await CheckFightFinish(delayTime, detectDelayTime,cts2.Token,avatar);
-                                    }
-                                }
+                                fightEndFlag = await CheckFightFinish(delayTime, detectDelayTime,cts2.Token,avatar);
                             }
                         }
 
                         if (fightEndFlag)
                         {
-                            FightEndTotoly  = true;
                             break;
                         }
                     }
@@ -1014,7 +931,6 @@ public class AutoFightTask : ISoloTask
 
                     if (fightEndFlag)
                     {
-                        FightEndTotoly  = true;
                         break;
                     }
                 }
@@ -1029,7 +945,6 @@ public class AutoFightTask : ISoloTask
             {
                 Simulation.ReleaseAllKey();
                 FightStatusFlag = false;
-                FightEndTotoly  = true;
                 image?.Dispose();
                 GC.Collect();//释放内存
                 GC.WaitForPendingFinalizers();//释放内存
@@ -1042,14 +957,7 @@ public class AutoFightTask : ISoloTask
         if (_taskParam.KazuhaPickupEnabled && _taskParam.ExpKazuhaPickup && !_isExperiencePickup)
         {
             TaskControl.Logger.LogInformation("基于怪物经验判断：{text} 经验值显示","等待");
-
-            var ms = _taskParam.FinishDetectConfig.RotationMode && _taskParam.FinishDetectConfig.RotateFindEnemyEnabled ? 1800:1000;
-            while (!_isExperiencePickup && ms > 0)
-            {
-                // Logger.LogError("战斗人次低于配置人次，且未检测到经验值显示，继续等待经验值显示，剩余等待时间{ms}ms-11", ms);
-                ms -= 100;
-                await Delay(100, ct);
-            }
+            await Delay(_taskParam.FinishDetectConfig.RotationMode ? 2000:1000, ct);
         }
         FightEndFlag = true; 
 
@@ -1068,7 +976,7 @@ public class AutoFightTask : ISoloTask
                       Math.Abs(pixelValue[1] - 196) <= 10 &&
                       Math.Abs(pixelValue[2] - 233) <= 10))
                 {
-                    await Delay(1000, ct);
+                    await Delay(_finishDetectConfig.RotateFindEnemyEnabled?2000:1000, ct);
                 }
             
                 await EndBloodCheck(ct,combatScenes);
@@ -1356,7 +1264,7 @@ public class AutoFightTask : ISoloTask
             
             await EndBloodCheck(ct,combatScenes);
             
-            Simulation.ReleaseAllKey(); 
+            Task.Run(async () => { Simulation.ReleaseAllKey(); }, ct);
         }
     }
 
@@ -1372,14 +1280,9 @@ public class AutoFightTask : ISoloTask
                Math.Abs(a.Item2 - b.Item2) < c.Item2 &&
                Math.Abs(a.Item3 - b.Item3) < c.Item3;
     }
-    
-    private volatile bool _totolyFlag = false;
 
     public async Task<bool> CheckFightFinish(int delayTime = 1500, int detectDelayTime = 450,CancellationToken ct = default,Avatar? avatar = null)
     {
-        if (_totolyFlag) return false;
-        _totolyFlag = true;
-        
         using var captureToRectArea = CaptureToRectArea();
         var pixelValue = captureToRectArea.SrcMat.At<Vec3b>(32, 67); 
         var paiMon = (Math.Abs(pixelValue[0] - 143) <= 10 &&
@@ -1387,21 +1290,16 @@ public class AutoFightTask : ISoloTask
                       Math.Abs(pixelValue[2] - 233) <= 10);
         if (!paiMon)
         {
-            _totolyFlag = false;
             return false;
         }
 
-        if (Dispatcher.IsCustomCts)
-        {
-            _totolyFlag = false;
-            return false;
-        }
+        if(Dispatcher.IsCustomCts) return false;
         if (_finishDetectConfig.RotateFindEnemyEnabled)
         {
             bool? result = null;
             try
             {
-                if (_taskParam.FinishDetectConfig.RotationMode&& _taskParam.FinishDetectConfig.RotateFindEnemyEnabled)
+                if (_taskParam.FinishDetectConfig.RotationMode)
                 {
                     Task.Run(async () =>
                     {
@@ -1421,13 +1319,11 @@ public class AutoFightTask : ISoloTask
             catch (Exception ex)
             {
                 TaskControl.Logger.LogError(ex, "SeekAndFightAsync 方法发生异常");
-                _totolyFlag = false;
                 return true;
             }
             
             if (result != null)
             {
-                _totolyFlag = false;
                 return result.Value;
             }
         }
@@ -1445,7 +1341,7 @@ public class AutoFightTask : ISoloTask
 
         Vec3b pixelValue2;
         var paiMon2 = false;
-        if (_taskParam.FinishDetectConfig.EndModel&& _taskParam.FinishDetectConfig.RotateFindEnemyEnabled)
+        if (_taskParam.FinishDetectConfig.EndModel)
         {
             pixelValue2 = ra.SrcMat.At<Vec3b>(32, 67); //派蒙
             paiMon2 = (Math.Abs(pixelValue2[0] - 143) <= 10 &&
@@ -1466,17 +1362,16 @@ public class AutoFightTask : ISoloTask
         if (!paiMon2 && !aa)
         {
             // Logger.LogWarning("测试3：{t},{t2}",paiMon2,aa);
-            TaskControl.Logger.LogInformation("{t}：识别到战斗结束",_taskParam.FinishDetectConfig.EndModel&& _taskParam.FinishDetectConfig.RotateFindEnemyEnabled? "快速模式" : "默认模式");
+            TaskControl.Logger.LogInformation("{t}：识别到战斗结束",_taskParam.FinishDetectConfig.EndModel? "快速模式" : "默认模式");
             //取消正在进行的换队
             FightEndTotoly  = true;
             Simulation.SendInput.SimulateAction(GIActions.OpenPartySetupScreen);
-            _totolyFlag = false;
             return true;
         }
         
-        if(_taskParam.RotaryFactor != 1) Logger.LogInformation("{t}：未识别到战斗结束",_taskParam.FinishDetectConfig.EndModel&& _taskParam.FinishDetectConfig.RotateFindEnemyEnabled? "快速模式" : "默认模式");
+        if(_taskParam.RotaryFactor != 1) Logger.LogInformation("{t}：未识别到战斗结束",_taskParam.FinishDetectConfig.EndModel? "快速模式" : "默认模式");
 
-        if (_finishDetectConfig.RotateFindEnemyEnabled && _taskParam.RotaryFactor != 1)
+        if (_finishDetectConfig.RotateFindEnemyEnabled  && _taskParam.RotaryFactor != 1)
         {
             try
             {
@@ -1493,7 +1388,6 @@ public class AutoFightTask : ISoloTask
         }
         
         _lastFightFlagTime = DateTime.UtcNow;
-        _totolyFlag = false;
         return false;
     }
 
