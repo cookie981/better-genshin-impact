@@ -909,15 +909,12 @@ public class AutoFightTask : ISoloTask
                             if (_taskParam.FinishDetectConfig.RotationMode &&
                                 _taskParam.FinishDetectConfig.RotateFindEnemyEnabled)
                             {
-                                Task.Run(() =>
+                                if (CheckFightFinish(0, detectDelayTime, cts2.Token, avatar).Result)
                                 {
-                                    if (CheckFightFinish(0, detectDelayTime, cts2.Token, avatar).Result)
-                                    {
-                                        FightEndTotoly = true;
-                                        fightEndFlag = true;
-                                    }
-                                });
-                                if(FightEndTotoly)break;
+                                    FightEndTotoly = true;
+                                    fightEndFlag = true;
+                                    break;
+                                }
                             }
                             else
                             {
@@ -950,15 +947,12 @@ public class AutoFightTask : ISoloTask
                             if (_taskParam.FinishDetectConfig.RotationMode &&
                              _taskParam.FinishDetectConfig.RotateFindEnemyEnabled)
                             {
-                                Task.Run(() =>
+                                if (CheckFightFinish(0, detectDelayTime, cts2.Token, avatar).Result)
                                 {
-                                    if (CheckFightFinish(0, detectDelayTime, cts2.Token, avatar).Result)
-                                    {
-                                        FightEndTotoly = true;
-                                        fightEndFlag = true;
-                                    }
-                                });
-                                if(FightEndTotoly)break;
+                                    FightEndTotoly = true;
+                                    fightEndFlag = true;
+                                    break;
+                                }
                             }
                             else
                             {
@@ -996,15 +990,12 @@ public class AutoFightTask : ISoloTask
                                 if (_taskParam.FinishDetectConfig.RotationMode &&
                                     _taskParam.FinishDetectConfig.RotateFindEnemyEnabled)
                                 {
-                                    Task.Run(() =>
+                                    if (CheckFightFinish(0, detectDelayTime, cts2.Token, avatar).Result)
                                     {
-                                        if (CheckFightFinish(0, detectDelayTime, cts2.Token, avatar).Result)
-                                        {
-                                            FightEndTotoly = true;
-                                            fightEndFlag = true;
-                                        }
-                                    });
-                                    if(FightEndTotoly)break;
+                                        FightEndTotoly = true;
+                                        fightEndFlag = true;
+                                        break;
+                                    }
                                 }
                                 else
                                 {
