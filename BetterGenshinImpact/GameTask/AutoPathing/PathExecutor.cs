@@ -1164,13 +1164,13 @@ public class PathExecutor
 
     public DateTime moveToStartTime;
 
-    public async Task MoveTo(WaypointForTrack waypoint,bool isGetOut = true, PathingTask? task = null, Waypoint? nextWaypoint = null,double? nextDistance = null,int retryDis = 4, bool isPoint = true)
+    public async Task MoveTo(WaypointForTrack waypoint,bool isGetOut = true, PathingTask? task = null, Waypoint? nextWaypoint = null,double? nextDistance = null)
     {
         // 切人
         Task.Run(async () =>
         {
             // 替换位置：在 MoveTo 方法内的类似代码块
-            if (!string.IsNullOrEmpty(PartyConfig.MainAvatarIndex) && isPoint)
+            if (!string.IsNullOrEmpty(PartyConfig.MainAvatarIndex))
             {
                 var idxStr = PartyConfig.MainAvatarIndex.Trim();
                 if (int.TryParse(idxStr, out var idx) && idx >= 1 && idx <= 4)
@@ -1197,7 +1197,7 @@ public class PathExecutor
             await SwitchAvatar(PartyConfig.MainAvatarIndex, false, task, true);
         }
         
-        var (position, additionalTimeInMs) = await GetPositionAndTime(screen, waypoint,isPoint);
+        var (position, additionalTimeInMs) = await GetPositionAndTime(screen, waypoint);
         var targetOrientation = Navigation.GetTargetOrientation(waypoint, position);
         Logger.LogDebug("粗略接近途经点，位置({x2},{y2})", $"{waypoint.GameX:F1}", $"{waypoint.GameY:F1}");
         await WaitUntilRotatedTo(targetOrientation, 5);
@@ -1277,7 +1277,7 @@ public class PathExecutor
 
             EndJudgment(screen2);
             
-             (position, additionalTimeInMs) = await GetPositionAndTime(screen2, waypoint,isPoint);
+             (position, additionalTimeInMs) = await GetPositionAndTime(screen2, waypoint);
              if (additionalTimeInMs>0)
              {
                  if (!Simulation.IsKeyDown(GIActions.MoveForward.ToActionKey().ToVK()))
@@ -1289,18 +1289,6 @@ public class PathExecutor
              }
             var distance = Navigation.GetDistance(waypoint, position);
             Debug.WriteLine($"接近目标点中，距离为{distance}");
-            if (!isPoint)
-            {
-                if(retryDis > 6)
-                {
-                    if (distance < 20 || distance > 100)
-                    {
-                        // Logger.LogError("111{t}",distance);
-                        Simulation.SendInput.SimulateAction(GIActions.MoveForward, KeyType.KeyUp);
-                        return;
-                    }
-                }
-            }
 
             if(runToDash == false && distance > 40 && waypoint.MoveMode == MoveModeEnum.Run.Code && avatar?.Name == "玛薇卡")
             {
@@ -1326,7 +1314,7 @@ public class PathExecutor
                                                                               || waypoint.MoveMode == MoveModeEnum.Jump.Code || (waypoint.MoveMode == MoveModeEnum.Climb.Code && distance < 20)) && avatar?.Name == "玛薇卡"));
             
 
-            if (avatar != null && isPoint)
+            if (avatar != null)
             {
                 // 自动赶路的靠近节点模式
                 if (!hurryOnLogo && trackingLogo && 
@@ -1870,7 +1858,7 @@ public class PathExecutor
                 }
             }
             
-            if (distance < (!isPoint ? (retryDis > 6 ? 15 : 4): (hurryOnLogo? 4 : 6)))
+            if (distance < (hurryOnLogo? 4 : 6))
             {
                 if (hurryOnIn)
                 {
@@ -1893,7 +1881,6 @@ public class PathExecutor
                     }
                    
                 }
-                // if(!isPoint)Logger.LogWarning("到达路径点附近tt-{t}",isPoint);
                 Logger.LogDebug("到达路径点附近");
                 break;
             }
@@ -1909,27 +1896,20 @@ public class PathExecutor
                     distanceTooFarRetryCount++;
                     if (distanceTooFarRetryCount > 50)
                     {
-                        if (isPoint)
+                        if (position == new Point2f())
                         {
-                            if (position == new Point2f())
-                            {
-                                throw new HandledException("重试多次后，当前点位无法被识别，放弃此路径！");
-                            }
-                            else
-                            {
-                                Logger.LogWarning($"距离过远（{position.X},{position.Y}）->（{waypoint.X},{waypoint.Y}）={distance}，重试多次后仍然失败，放弃此路径点！");
-                                throw new HandledException("目标距离过远，可能是当前点位无法识别，放弃此路径！");
-                            }
+                            throw new HandledException("重试多次后，当前点位无法被识别，放弃此路径！");
                         }
                         else
                         {
-                            return; 
+                            Logger.LogWarning($"距离过远（{position.X},{position.Y}）->（{waypoint.X},{waypoint.Y}）={distance}，重试多次后仍然失败，放弃此路径点！");
+                            throw new HandledException("目标距离过远，可能是当前点位无法识别，放弃此路径！");
                         }
                     }
                     else
                     {
                         // 取余减少日志输出频率
-                        if (distanceTooFarRetryCount % 5 == 0 && isPoint)
+                        if (distanceTooFarRetryCount % 5 == 0)
                         {
                             Logger.LogWarning($"距离过远（{position.X},{position.Y}）->（{waypoint.X},{waypoint.Y}）={distance}，重试");
                         }
@@ -1937,7 +1917,7 @@ public class PathExecutor
                         if (distanceTooFarRetryCount % 10 == 0)
                         {
                             await ResolveAnomalies(screen);
-                            if (isPoint)Logger.LogInformation($"重置到上次正确识别的坐标 ({prevNotTooFarPosition.X},{prevNotTooFarPosition.Y})");
+                            Logger.LogInformation($"重置到上次正确识别的坐标 ({prevNotTooFarPosition.X},{prevNotTooFarPosition.Y})");
                             Navigation.SetPrevPosition(prevNotTooFarPosition.X, prevNotTooFarPosition.Y);
                             // 淡入淡出特效
                             await Delay(500, ct);
@@ -2491,7 +2471,7 @@ public class PathExecutor
     }
     //
     public bool GetPositionAndTimeSuspendFlag = false;
-    private async Task<(Point2f point,int additionalTimeInMs)> GetPositionAndTime(ImageRegion imageRegion, WaypointForTrack waypoint,bool isPoint = true)
+    private async Task<(Point2f point,int additionalTimeInMs)> GetPositionAndTime(ImageRegion imageRegion, WaypointForTrack waypoint)
     {
         var position = Navigation.GetPosition(imageRegion, waypoint.MapName, waypoint.MapMatchMethod);
         int time = 0;
@@ -2499,16 +2479,8 @@ public class PathExecutor
         {
             if (!Bv.IsInMainUi(imageRegion))
             {
-                if (isPoint)
-                {
-                    Logger.LogDebug("小地图位置定位失败，且当前不是主界面，进入异常处理");
-                    await ResolveAnomalies(imageRegion);
-                }
-                else
-                {
-                    // Logger.LogError("小地图位置定位失败，且当前不是主界面，无法继续执行");
-                    return (position,time);
-                }
+                Logger.LogDebug("小地图位置定位失败，且当前不是主界面，进入异常处理");
+                await ResolveAnomalies(imageRegion);
             }
         }
 
@@ -2527,7 +2499,7 @@ public class PathExecutor
                 if (prePosition != default)
                 {
                     position = prePosition;
-                    if(isPoint)Logger.LogInformation(@$"未识别到具体路径，取上次点位");
+                    Logger.LogInformation(@$"未识别到具体路径，取上次点位");
                 }
             }else if (waypoint.Misidentification.HandlingMode == "mapRecognition"){
                 //大地图识别坐标
