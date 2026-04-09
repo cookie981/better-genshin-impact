@@ -70,7 +70,6 @@ namespace BetterGenshinImpact.GameTask.AutoFight
         // 新增：通用异步按键保持方法，确保在取消/异常时释放按键
         private static async Task HoldKeysAsync((GIActions action, KeyType type)[] holdKeys, int delayMs, CancellationToken ct)
         {
-            if(delayMs < 1) return;
             // 按下所有按键
             foreach (var k in holdKeys)
             {
@@ -98,8 +97,6 @@ namespace BetterGenshinImpact.GameTask.AutoFight
             }
         }
 
-        private static DateTime  _lsatLogTime = DateTime.MinValue;
-        
         public static Task<bool?> MoveForwardAsync(Scalar scalarLower, Scalar scalarHigher, ILogger logger, CancellationToken ct,int distance = 1000)
         {
             using var image2 = CaptureToRectArea();
@@ -112,8 +109,6 @@ namespace BetterGenshinImpact.GameTask.AutoFight
             using Mat labels2 = new Mat();
             using Mat stats2 = new Mat();
             using Mat centroids2 = new Mat();
-            //Log时间标记位，确保日志不会过于频繁
-            bool isDebug = true;
 
             int numLabels2 = Cv2.ConnectedComponentsWithStats(mask2, labels2, stats2, centroids2, connectivity: PixelConnectivity.Connectivity4, ltype: MatType.CV_32S);
 
@@ -128,28 +123,13 @@ namespace BetterGenshinImpact.GameTask.AutoFight
 
                 if (success)
                 {
-                    if (DateTime.UtcNow - _lsatLogTime > TimeSpan.FromSeconds(3)) 
-                    {
-                        _lsatLogTime = DateTime.UtcNow;
-                        isDebug = true;
-                    }else
-                    {
-                        isDebug = false;
-                    }
-                    
                     int x = stats[0];
                     int y = stats[1];
                     // int width = stats[2];
                     int height = stats[3];
 
                     SDPoint firstPixel = new SDPoint(x, y);
-                    
-                    //5秒内只记录一次敌人位置和血量高度，避免日志过于频繁
-                    if (isDebug)
-                    {
-                        _lsatLogTime = DateTime.UtcNow;
-                        logger.LogInformation("敌人位置: ({firstPixel.X}, {firstPixel.Y})，血量高度: {height}", firstPixel.X, firstPixel.Y, height);  
-                    }
+                    logger.LogInformation("敌人位置: ({firstPixel.X}, {firstPixel.Y})，血量高度: {height}", firstPixel.X, firstPixel.Y, height);
                     
                     if (firstPixel.X < 580 || firstPixel.X > 1315 || firstPixel.Y > 800)
                     {
@@ -159,7 +139,7 @@ namespace BetterGenshinImpact.GameTask.AutoFight
                             // 左上区域
                             if (height <= 6)
                             {
-                                // logger.LogInformation("敌人在左上，向前加向左移动");
+                                logger.LogInformation("敌人在左上，向前加向左移动");
                                 Task.Run(async () =>
                                 {
                                     await HoldKeysAsync(
@@ -175,7 +155,7 @@ namespace BetterGenshinImpact.GameTask.AutoFight
                             // 右上区域
                             if (height <= 6)
                             {
-                                // logger.LogInformation("敌人在右上，向前加向右移动");
+                                logger.LogInformation("敌人在右上，向前加向右移动");
                                 Task.Run(async () =>
                                 {
                                     await HoldKeysAsync(
@@ -191,7 +171,7 @@ namespace BetterGenshinImpact.GameTask.AutoFight
                             // 左下区域
                             if (height <= 6)
                             {
-                                if (distance >= 1&&isDebug) logger.LogInformation("敌人在左下，向后加向左移动{distance}",distance);
+                                logger.LogInformation("敌人在左下，向后加向左移动");
                                 Task.Run(async () =>
                                 {
                                     await HoldKeysAsync(
@@ -207,7 +187,7 @@ namespace BetterGenshinImpact.GameTask.AutoFight
                             // 右下区域
                             if (height <= 6)
                             {
-                                if (distance >= 1&&isDebug) logger.LogInformation("敌人在右下，向后加向右移动{distance}",distance);
+                                logger.LogInformation("敌人在右下，向后加向右移动");
                                 Task.Run(async () =>
                                 {
                                     await HoldKeysAsync(
@@ -223,7 +203,7 @@ namespace BetterGenshinImpact.GameTask.AutoFight
                             // 上方区域
                             if (height <= 6)
                             {
-                                if (distance >= 1&&isDebug) logger.LogInformation("敌人在上方，向前移动{distance}",distance);
+                                logger.LogInformation("敌人在上方，向前移动");
                                 Task.Run(async () =>
                                 {
                                     await HoldKeysAsync(
@@ -239,7 +219,7 @@ namespace BetterGenshinImpact.GameTask.AutoFight
                             // 下方区域
                             if (height <= 6)
                             {
-                                if (distance >= 1&&isDebug) logger.LogInformation("敌人在下方，向后移动{distance}",distance);
+                                logger.LogInformation("敌人在下方，向后移动");
                                 Task.Run(async () =>
                                 {
                                     await HoldKeysAsync(
@@ -274,7 +254,7 @@ namespace BetterGenshinImpact.GameTask.AutoFight
                         }
                         else if (firstPixel.X < 1315 && firstPixel.X > 500 && firstPixel.Y < 800 && height > 2)
                         {
-                            if (distance >= 1&&isDebug) logger.LogInformation("敌人在上方，向前移动{distance}",distance);
+                            logger.LogInformation("敌人在上方，向前移动");
                             Task.Run(async () =>
                             {
                                 await HoldKeysAsync(
@@ -286,7 +266,7 @@ namespace BetterGenshinImpact.GameTask.AutoFight
                         }
                         else if (firstPixel.X < 1315 && firstPixel.X > 500 && firstPixel.Y > 800 && height > 2)
                         {
-                            if (distance >= 1&&isDebug) logger.LogInformation("敌人在下方，向后移动{distance}",distance);
+                            logger.LogInformation("敌人在下方，向后移动");
                             Task.Run(async () =>
                             {
                                 await HoldKeysAsync(
@@ -299,12 +279,12 @@ namespace BetterGenshinImpact.GameTask.AutoFight
                         else if (height < 3)
                         {
                             Simulation.SendInput.SimulateAction(GIActions.MoveBackward);
-                            if (distance >= 1&&isDebug) logger.LogInformation("敌人血量高度小于3，不移动{distance}",distance);
+                            logger.LogInformation("敌人血量高度小于3，不移动");
                         }
                         else
                         {
                             Simulation.SendInput.SimulateAction(GIActions.MoveBackward);
-                            if (distance >= 1&&isDebug) logger.LogInformation("不移动{distance}",distance);
+                            logger.LogInformation("不移动");
                         }
                     }
                 }
@@ -338,7 +318,7 @@ namespace BetterGenshinImpact.GameTask.AutoFight
         private  static volatile  bool _moveAroadLock = false;
         
         public static async Task<bool?> SeekAndFightAsync(ILogger logger, int detectDelayTime,int delayTime,CancellationToken ct,
-            bool isEndCheck = false,int rotaryFactor = 6,Avatar? avatar = null,int distance = 1000,int retryDis = 0,bool isQuickyEnd = false)
+            bool isEndCheck = false,int rotaryFactor = 6,Avatar? avatar = null,int distance = 1000,int retryDis = 0)
         {
             if (rotaryFactor == 1 || _moveAroadLock) return null;
             _moveAroadLock = true;
@@ -481,7 +461,7 @@ namespace BetterGenshinImpact.GameTask.AutoFight
                         }
                     }
 
-                    if (retryCount == 0 && !Dispatcher.IsCustomCts && !isQuickyEnd)
+                    if (retryCount == 0 && !Dispatcher.IsCustomCts)
                     {
                         await Delay(delayTime, ct);
                         // Logger.LogInformation("打开编队界面检查战斗是否结束，延时{detectDelayTime}毫秒检查", detectDelayTime);
