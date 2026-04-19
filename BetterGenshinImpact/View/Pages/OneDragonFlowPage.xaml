@@ -454,84 +454,90 @@
                         Margin="0,0,1,0">
                        
                         <!--  合成树脂  -->
-                        <TextBlock Margin="4,0,0,4"
-                                   FontSize="14"
-                                   Foreground="{DynamicResource SystemAccentColorPrimaryBrush}"
-                                   Text="合成树脂"/>
-                        
-                        <ui:CardControl Margin="0,0,0,12" Icon="{ui:SymbolIcon WeatherMoon24}">
-                            <ui:CardControl.Header>
-                                <Grid>
-                                    <Grid.RowDefinitions>
-                                        <RowDefinition Height="Auto" />
-                                        <RowDefinition Height="*" />
-                                    </Grid.RowDefinitions>
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="Auto" />
-                                        <ColumnDefinition Width="Auto" />
-                                        <ColumnDefinition Width="Auto" />
-                                        <ColumnDefinition Width="*" />
-                                    </Grid.ColumnDefinitions>
-                                    <ui:TextBlock Grid.Row="0"
-                                                  Grid.Column="0"
-                                                  Width="Auto"
-                                                  HorizontalAlignment="Left"
-                                                  FontTypography="Body"
-                                                  Text="合成树脂合成台"
-                                                  TextWrapping="Wrap" />
-                                    <ui:TextBlock Grid.Row="1"
-                                                  Grid.Column="0"
-                                                  Margin=" 0,0,0,0"
-                                                  Width="Auto"
-                                                  HorizontalAlignment="Left"
-                                                  Foreground="{ui:ThemeResource TextFillColorTertiaryBrush}"
-                                                  Text="指定地区合成树脂"
-                                                  TextWrapping="Wrap" />
-                                    <ComboBox 
-                                        Grid.Row="0"
-                                        Grid.Column="1"
-                                        Grid.RowSpan="2" 
-                                              Margin="18,0,0,0"
-                                              Width="Auto"
-                                              HorizontalContentAlignment="Center"
-                                              HorizontalAlignment="Left"
-                                              SelectedItem="{Binding SelectedConfig.CraftingBenchCountry, Mode=TwoWay}"
-                                              ItemsSource="{Binding CraftingBenchCountry}" />
-                                    
-                                    <ui:TextBlock Grid.Row="0"
-                                                  Grid.Column="2"
-                                                  Width="Auto"
-                                                  Margin=" 15,0,0,0"
-                                                  HorizontalAlignment="Left"
-                                                  FontTypography="Body"
-                                                  Text="合成后保留"
-                                                  TextWrapping="Wrap" />
-                                    <ui:TextBlock Grid.Row="1"
-                                                  Grid.Column="2"
-                                                  Margin=" 15,0,0,0"
-                                                  Width="Auto"
-                                                  HorizontalAlignment="Left"
-                                                  Foreground="{ui:ThemeResource TextFillColorTertiaryBrush}"
-                                                  Text="原粹树脂数量"
-                                                  TextWrapping="Wrap" />
-                                    <TextBox Grid.Row="0"
-                                             Grid.Column="3"
-                                             Grid.RowSpan="2" 
-                                             Margin="8,0,0,0" 
-                                             Width="Auto"
-                                             HorizontalContentAlignment="Center"
-                                             Text="{Binding SelectedConfig.MinResinToKeep, Mode=TwoWay, TargetNullValue=-1}"
-                                             Height="{Binding ElementName=combinedTextBlocks, Path=ActualHeight}"/>
-                                </Grid>
-                            </ui:CardControl.Header>
-                        </ui:CardControl>
+                        <Expander IsExpanded="{Binding SelectedConfig.IsCraftingResinExpanded, Mode=TwoWay}" Margin="0,0,0,8">
+                            <Expander.Header>
+                                <TextBlock FontSize="14"
+                                           Foreground="{DynamicResource SystemAccentColorPrimaryBrush}"
+                                           Text="合成树脂"/>
+                            </Expander.Header>
+                            <StackPanel>
+                                <ui:CardControl Margin="0,4,0,12" Icon="{ui:SymbolIcon WeatherMoon24}">
+                                    <ui:CardControl.Header>
+                                        <Grid>
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="Auto" />
+                                                <RowDefinition Height="*" />
+                                            </Grid.RowDefinitions>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <ui:TextBlock Grid.Row="0"
+                                                          Grid.Column="0"
+                                                          Width="Auto"
+                                                          HorizontalAlignment="Left"
+                                                          FontTypography="Body"
+                                                          Text="合成树脂合成台"
+                                                          TextWrapping="Wrap" />
+                                            <ui:TextBlock Grid.Row="1"
+                                                          Grid.Column="0"
+                                                          Margin=" 0,0,0,0"
+                                                          Width="Auto"
+                                                          HorizontalAlignment="Left"
+                                                          Foreground="{ui:ThemeResource TextFillColorTertiaryBrush}"
+                                                          Text="指定地区合成树脂"
+                                                          TextWrapping="Wrap" />
+                                            <ComboBox 
+                                                Grid.Row="0"
+                                                Grid.Column="1"
+                                                Grid.RowSpan="2" 
+                                                      Margin="18,0,0,0"
+                                                      Width="Auto"
+                                                      HorizontalContentAlignment="Center"
+                                                      HorizontalAlignment="Left"
+                                                      SelectedItem="{Binding SelectedConfig.CraftingBenchCountry, Mode=TwoWay}"
+                                                      ItemsSource="{Binding CraftingBenchCountry}" />
+                                            
+                                            <ui:TextBlock Grid.Row="0"
+                                                          Grid.Column="2"
+                                                          Width="Auto"
+                                                          Margin=" 15,0,0,0"
+                                                          HorizontalAlignment="Left"
+                                                          FontTypography="Body"
+                                                          Text="合成后保留"
+                                                          TextWrapping="Wrap" />
+                                            <ui:TextBlock Grid.Row="1"
+                                                          Grid.Column="2"
+                                                          Margin=" 15,0,0,0"
+                                                          Width="Auto"
+                                                          HorizontalAlignment="Left"
+                                                          Foreground="{ui:ThemeResource TextFillColorTertiaryBrush}"
+                                                          Text="原粹树脂数量"
+                                                          TextWrapping="Wrap" />
+                                            <TextBox Grid.Row="0"
+                                                     Grid.Column="3"
+                                                     Grid.RowSpan="2" 
+                                                     Margin="8,0,0,0" 
+                                                     Width="Auto"
+                                                     HorizontalContentAlignment="Center"
+                                                     Text="{Binding SelectedConfig.MinResinToKeep, Mode=TwoWay, TargetNullValue=-1}"
+                                                     Height="{Binding ElementName=combinedTextBlocks, Path=ActualHeight}"/>
+                                        </Grid>
+                                    </ui:CardControl.Header>
+                                </ui:CardControl>
+                            </StackPanel>
+                        </Expander>
 
                         <!--  自动秘境  -->
-                        <TextBlock Margin="4,0,0,4"
-                                   FontSize="14"
-                                   Foreground="{DynamicResource SystemAccentColorPrimaryBrush}"
-                                   Text="自动秘境" />
-                        
+                        <Expander IsExpanded="{Binding SelectedConfig.IsAutoDomainExpanded, Mode=TwoWay}" Margin="0,0,0,8">
+                            <Expander.Header>
+                                <TextBlock FontSize="14"
+                                           Foreground="{DynamicResource SystemAccentColorPrimaryBrush}"
+                                           Text="自动秘境"/>
+                            </Expander.Header>
+                            <StackPanel>
                         <ui:CardExpander Margin="0,0,0,12" ContentPadding="0">
                             <ui:CardExpander.Icon>
                                 <ui:FontIcon Glyph="&#xf073;" Style="{StaticResource FaFontIconStyle}" />
@@ -1108,16 +1114,22 @@
                         </ui:CardControl.Header>
                         
                     </ui:CardControl>
+                            </StackPanel>
+                        </Expander>
 <!--  自动地脉花  -->
-                    <StackPanel Orientation="Horizontal" VerticalAlignment="Bottom" Margin="4,0,0,4">
-                        <TextBlock FontSize="14"
-                                   Foreground="{DynamicResource SystemAccentColorPrimaryBrush}"
-                                   Text="自动地脉花" />
-                        <TextBlock Margin="4,0,0,0"
-                                   VerticalAlignment="Center"
-                                   FontSize="11"
-                                   Text="（具体参数在 独立任务-自动地脉花 中配置）" />
-                    </StackPanel>
+                        <Expander IsExpanded="{Binding SelectedConfig.IsAutoLeyLineExpanded, Mode=TwoWay}" Margin="0,0,0,8">
+                            <Expander.Header>
+                                <StackPanel Orientation="Horizontal" VerticalAlignment="Bottom">
+                                    <TextBlock FontSize="14"
+                                               Foreground="{DynamicResource SystemAccentColorPrimaryBrush}"
+                                               Text="自动地脉花" />
+                                    <TextBlock Margin="4,0,0,0"
+                                               VerticalAlignment="Center"
+                                               FontSize="11"
+                                               Text="（具体参数在 独立任务-自动地脉花 中配置）" />
+                                </StackPanel>
+                            </Expander.Header>
+                            <StackPanel>
 
                     <ui:CardControl Margin="0,0,0,12">
                         <ui:CardControl.Icon>
@@ -1441,12 +1453,17 @@
                             </Grid>
                         </StackPanel>
                     </ui:CardExpander>
+                            </StackPanel>
+                        </Expander>
                         <!--  领取奖励  -->
-                        <TextBlock Margin="4,0,0,4"
-                                   FontSize="14"
-                                   Foreground="{DynamicResource SystemAccentColorPrimaryBrush}"
-                                   Text="领取奖励" />
-                        <ui:CardControl Margin="0,0,0,12">
+                        <Expander IsExpanded="{Binding SelectedConfig.IsClaimRewardsExpanded, Mode=TwoWay}" Margin="0,0,0,8">
+                            <Expander.Header>
+                                <TextBlock FontSize="14"
+                                           Foreground="{DynamicResource SystemAccentColorPrimaryBrush}"
+                                           Text="领取奖励" />
+                            </Expander.Header>
+                            <StackPanel>
+                        <ui:CardControl Margin="0,4,0,12">
                             <ui:CardControl.Icon>
                                 <ui:FontIcon Glyph="&#xf14e;" Style="{StaticResource FaFontIconStyle}" />
                             </ui:CardControl.Icon>
@@ -1507,13 +1524,18 @@
                                 PlaceholderText="填写好感队名称"
                                 TextWrapping="Wrap" />
                         </ui:CardControl>
+                            </StackPanel>
+                        </Expander>
 
                         <!--  尘歌壶  -->
-                        <TextBlock Margin="4,0,0,4"
-                                   FontSize="14"
-                                   Foreground="{DynamicResource SystemAccentColorPrimaryBrush}"
-                                   Text="尘歌壶奖励" />
-                        <ui:CardControl Margin="0,0,0,12">
+                        <Expander IsExpanded="{Binding SelectedConfig.IsSereniteaPotExpanded, Mode=TwoWay}" Margin="0,0,0,8">
+                            <Expander.Header>
+                                <TextBlock FontSize="14"
+                                           Foreground="{DynamicResource SystemAccentColorPrimaryBrush}"
+                                           Text="尘歌壶奖励" />
+                            </Expander.Header>
+                            <StackPanel>
+                        <ui:CardControl Margin="0,4,0,12">
                             <ui:CardControl.Icon>
                                 <ui:FontIcon Glyph="&#xf07a;" Style="{StaticResource FaFontIconStyle}" />
                             </ui:CardControl.Icon>
@@ -1807,13 +1829,18 @@
                                 
                             </StackPanel>
                         </ui:CardControl>
+                            </StackPanel>
+                        </Expander>
                         
                         <!--  完成后操作  -->
-                        <TextBlock Margin="4,0,0,4"
-                                   FontSize="14"
-                                   Foreground="{DynamicResource SystemAccentColorPrimaryBrush}"
-                                   Text="完成后操作" />
-                        <ui:CardControl Margin="0,0,0,12">
+                        <Expander IsExpanded="{Binding SelectedConfig.IsCompletionActionExpanded, Mode=TwoWay}" Margin="0,0,0,8">
+                            <Expander.Header>
+                                <TextBlock FontSize="14"
+                                           Foreground="{DynamicResource SystemAccentColorPrimaryBrush}"
+                                           Text="完成后操作" />
+                            </Expander.Header>
+                            <StackPanel>
+                        <ui:CardControl Margin="0,4,0,12">
                             <ui:CardControl.Icon>
                                 <ui:FontIcon Glyph="&#xf11e;" Style="{StaticResource FaFontIconStyle}" />
                             </ui:CardControl.Icon>
@@ -1872,13 +1899,18 @@
                                       SelectedItem="{Binding Config.ContinuousCompletionAction, Mode=TwoWay}"
                                       ItemsSource="{Binding CompletionActionList}" />
                         </ui:CardControl>
+                            </StackPanel>
+                        </Expander>
 
                         <!--  绑定 UID  -->
-                         <TextBlock Margin="4,0,0,4"
-                                   FontSize="14"
-                                   Foreground="{DynamicResource SystemAccentColorPrimaryBrush}"
-                                   Text="绑定 UID" />
-                       <ui:CardControl Margin="0,0,0,12" Icon="{ui:SymbolIcon PersonAccounts20}">
+                        <Expander IsExpanded="{Binding SelectedConfig.IsBindUidExpanded, Mode=TwoWay}" Margin="0,0,0,8">
+                            <Expander.Header>
+                                <TextBlock FontSize="14"
+                                           Foreground="{DynamicResource SystemAccentColorPrimaryBrush}"
+                                           Text="绑定 UID" />
+                            </Expander.Header>
+                            <StackPanel>
+                       <ui:CardControl Margin="0,4,0,12" Icon="{ui:SymbolIcon PersonAccounts20}">
                             <ui:CardControl.Header>
                                 <Grid>
                                     <Grid.RowDefinitions>
@@ -1925,6 +1957,8 @@
                                 </Grid>
                             </ui:CardControl.Header>
                         </ui:CardControl>
+                            </StackPanel>
+                        </Expander>
                         </StackPanel>
                     </Grid>
                 </ScrollViewer>

@@ -403,6 +403,29 @@ public partial class OneDragonFlowConfig : ObservableObject
     // 地脉花刷取次数取小值（仅耗尽模式生效）
     [ObservableProperty]
     private bool _leyLineOpenModeCountMin = false;
+
+    // 折叠状态
+    [ObservableProperty]
+    private bool _isCraftingResinExpanded = true;
+
+    [ObservableProperty]
+    private bool _isAutoDomainExpanded = true;
+
+    [ObservableProperty]
+    private bool _isAutoLeyLineExpanded = true;
+
+    [ObservableProperty]
+    private bool _isClaimRewardsExpanded = true;
+
+    [ObservableProperty]
+    private bool _isSereniteaPotExpanded = true;
+
+    [ObservableProperty]
+    private bool _isCompletionActionExpanded = true;
+
+    [ObservableProperty]
+    private bool _isBindUidExpanded = true;
+
     #region 每周秘境配置
 
     //周一
