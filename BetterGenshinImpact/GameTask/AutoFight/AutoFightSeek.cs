@@ -359,7 +359,7 @@ namespace BetterGenshinImpact.GameTask.AutoFight
 
                 int retryCount = isEndCheck ? 1 : 0;
 
-                Task.Run(async () =>
+                Task.Run(() =>
                 {
                     if (Monitor.TryEnter(MoveLock))
                     {
@@ -371,7 +371,7 @@ namespace BetterGenshinImpact.GameTask.AutoFight
                                 pathExecutor.MoveTo(AutoFightTask.FightWaypoint, false, null, null,
                                     null,
                                     retryDis, false).Wait(2000, ct);
-                                await Task.Delay(5000, ct);
+                                Task.Delay(5000, ct).Wait();
                             }
                             else
                             {
