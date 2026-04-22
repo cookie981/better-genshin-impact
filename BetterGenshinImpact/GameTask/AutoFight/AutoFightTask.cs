@@ -1859,12 +1859,12 @@ public class AutoFightTask : ISoloTask
                             var isRed = CombatHealthDetector.IsRedBlood(ra);
                             var isGreen = CombatHealthDetector.IsGreenBlood(ra);
                             
-                            // 输出实际像素值用于调试
-                            var bloodPixel = ra.SrcMat.At<Vec3b>(1009, 808);
-                            var greenPixel = ra.SrcMat.At<Vec3b>(1010, 814);
-                            Logger.LogDebug("[吃药检测] isRed={isRed}, isGreen={isGreen}, bloodBGR=({b},{g},{r}), greenBGR=({gb},{gg},{gr}), greenCount={gc}",
-                                isRed, isGreen, bloodPixel[0], bloodPixel[1], bloodPixel[2],
-                                greenPixel[0], greenPixel[1], greenPixel[2], greenBloodCount);
+                            // // 输出实际像素值用于调试
+                            // var bloodPixel = ra.SrcMat.At<Vec3b>(1009, 808);
+                            // var greenPixel = ra.SrcMat.At<Vec3b>(1010, 814);
+                            // Logger.LogDebug("[吃药检测] isRed={isRed}, isGreen={isGreen}, bloodBGR=({b},{g},{r}), greenBGR=({gb},{gg},{gr}), greenCount={gc}",
+                            //     isRed, isGreen, bloodPixel[0], bloodPixel[1], bloodPixel[2],
+                            //     greenPixel[0], greenPixel[1], greenPixel[2], greenBloodCount);
                             
                             if (isRed)
                             {
