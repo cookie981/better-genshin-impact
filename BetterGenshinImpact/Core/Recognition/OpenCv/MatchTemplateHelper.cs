@@ -59,10 +59,7 @@ public class MatchTemplateHelper
             }
             catch (OpenCvSharp.OpenCVException ex)
             {
-                _logger.LogError($"OpenCV内存异常, 重试1次: {ex.Message}");
-                //内存清理
-                GC.Collect();//释放内存
-                GC.WaitForPendingFinalizers();//释放内存
+                _logger.LogError($"OpenCV内存异常, 重试第{attempt + 1}次: {ex.Message}");
                 CleanupMemory();
                 attempt++;
             }
@@ -70,8 +67,6 @@ public class MatchTemplateHelper
             {
                 _logger.LogError(ex.Message);
                 _logger.LogDebug(ex, ex.Message);
-                GC.Collect();//释放内存
-                GC.WaitForPendingFinalizers();//释放内存
                 CleanupMemory();
                 return default;
             }
@@ -79,35 +74,18 @@ public class MatchTemplateHelper
 
         // 如果达到最大重试次数仍然失败，记录最终失败信息
         _logger.LogError("MatchTemplate方法在最大重试次数后仍然失败。");
-        GC.Collect();//释放内存
-        GC.WaitForPendingFinalizers();//释放内存
         CleanupMemory();
         return default;
     }
     
     /// <summary>
-    /// 彻底清理内存（针对OpenCV非托管内存+托管内存）
+    /// 轻量内存清理（非阻塞、非压缩，避免在热路径上阻塞线程）
     /// </summary>
     public static void CleanupMemory()
     {
         try
         {
-            // 1. 强制回收所有代的托管内存，启用压缩和阻塞回收
-            GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: true);
-            
-            // 2. 等待所有终结器执行完毕（处理实现了Finalize的对象，包括OpenCV的非托管资源）
-            GC.WaitForPendingFinalizers();
-            
-            // 3. 再次回收，清理终结器执行后变为可回收的对象
-            GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: true);
-
-            // 4. 针对大对象堆(LOH)的压缩（.NET Core 3.0+）
-            if (Environment.Version.Major >= 3)
-            {
-                System.Runtime.GCSettings.LargeObjectHeapCompactionMode = 
-                    System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
-            }
-
+            GC.Collect();
             _logger.LogDebug("内存清理流程执行完成");
         }
         catch (Exception ex)
@@ -174,6 +152,8 @@ public class MatchTemplateHelper
     /// <returns></returns>
     public static Dictionary<string, List<Point>> MatchMultiPicForOnePic(Mat srcMat, Dictionary<string, Mat> imgSubDictionary, double threshold = 0.8)
     {
+        // Clone srcMat so the caller's original Mat is never mutated.
+        using var workingMat = srcMat.Clone();
         var dictionary = new Dictionary<string, List<Point>>();
         foreach (var kvp in imgSubDictionary)
         {
@@ -181,11 +161,11 @@ public class MatchTemplateHelper
 
             while (true)
             {
-                var point = MatchTemplate(srcMat, kvp.Value, TemplateMatchModes.CCoeffNormed, null, threshold);
+                var point = MatchTemplate(workingMat, kvp.Value, TemplateMatchModes.CCoeffNormed, null, threshold);
                 if (point != new Point())
                 {
                     // 把结果给遮掩掉，避免重复识别
-                    Cv2.Rectangle(srcMat, point, new Point(point.X + kvp.Value.Width, point.Y + kvp.Value.Height), Scalar.Black, -1);
+                    Cv2.Rectangle(workingMat, point, new Point(point.X + kvp.Value.Width, point.Y + kvp.Value.Height), Scalar.Black, -1);
                     list.Add(point);
                 }
                 else
@@ -210,15 +190,17 @@ public class MatchTemplateHelper
     /// <returns></returns>
     public static List<Rect> MatchMultiPicForOnePic(Mat srcMat, List<Mat> imgSubList, double threshold = 0.8)
     {
+        // Clone srcMat so the caller's original Mat is never mutated.
+        using var workingMat = srcMat.Clone();
         List<Rect> list = [];
         foreach (var sub in imgSubList)
             while (true)
             {
-                var point = MatchTemplate(srcMat, sub, TemplateMatchModes.CCoeffNormed, null, threshold);
+                var point = MatchTemplate(workingMat, sub, TemplateMatchModes.CCoeffNormed, null, threshold);
                 if (point != new Point())
                 {
                     // 把结果给遮掩掉，避免重复识别
-                    Cv2.Rectangle(srcMat, point, new Point(point.X + sub.Width, point.Y + sub.Height), Scalar.Black, -1);
+                    Cv2.Rectangle(workingMat, point, new Point(point.X + sub.Width, point.Y + sub.Height), Scalar.Black, -1);
                     list.Add(new Rect(point.X, point.Y, sub.Width, sub.Height));
                 }
                 else
@@ -240,15 +222,17 @@ public class MatchTemplateHelper
     /// <returns></returns>
     public static List<Rect> MatchOnePicForOnePic(Mat srcMat, Mat dstMat, Mat? maskMat = null, double threshold = 0.8)
     {
+        // Clone srcMat so the caller's original Mat is never mutated.
+        using var workingMat = srcMat.Clone();
         List<Rect> list = [];
 
         while (true)
         {
-            var point = MatchTemplate(srcMat, dstMat, TemplateMatchModes.CCoeffNormed, maskMat, threshold);
+            var point = MatchTemplate(workingMat, dstMat, TemplateMatchModes.CCoeffNormed, maskMat, threshold);
             if (point != new Point())
             {
                 // 把结果给遮掩掉，避免重复识别
-                Cv2.Rectangle(srcMat, point, new Point(point.X + dstMat.Width, point.Y + dstMat.Height), Scalar.Black, -1);
+                Cv2.Rectangle(workingMat, point, new Point(point.X + dstMat.Width, point.Y + dstMat.Height), Scalar.Black, -1);
                 list.Add(new Rect(point.X, point.Y, dstMat.Width, dstMat.Height));
             }
             else
@@ -272,6 +256,8 @@ public class MatchTemplateHelper
     /// <returns></returns>
     public static List<Rect> MatchOnePicForOnePic(Mat srcMat, Mat dstMat, TemplateMatchModes matchMode, Mat? maskMat, double threshold, int maxCount = -1)
     {
+        // Clone srcMat so the caller's original Mat is never mutated.
+        using var workingMat = srcMat.Clone();
         List<Rect> list = [];
 
         if (maxCount < 0)
@@ -281,11 +267,11 @@ public class MatchTemplateHelper
 
         for (int i = 0; i < maxCount; i++)
         {
-            var point = MatchTemplate(srcMat, dstMat, matchMode, maskMat, threshold);
+            var point = MatchTemplate(workingMat, dstMat, matchMode, maskMat, threshold);
             if (point != new Point())
             {
                 // 把结果给遮掩掉，避免重复识别
-                Cv2.Rectangle(srcMat, point, new Point(point.X + dstMat.Width, point.Y + dstMat.Height), Scalar.Black, -1);
+                Cv2.Rectangle(workingMat, point, new Point(point.X + dstMat.Width, point.Y + dstMat.Height), Scalar.Black, -1);
                 list.Add(new Rect(point.X, point.Y, dstMat.Width, dstMat.Height));
             }
             else
