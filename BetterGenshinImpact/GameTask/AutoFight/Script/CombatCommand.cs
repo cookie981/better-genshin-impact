@@ -17,6 +17,8 @@ public class CombatCommand
     public List<string>? Args { get; set; }
 
     public List<int> ActivatingRound { get; set; }
+    
+    public bool IsRoundExclude { get; set; } = false;
 
     public CombatCommand(string name, string command)
     {

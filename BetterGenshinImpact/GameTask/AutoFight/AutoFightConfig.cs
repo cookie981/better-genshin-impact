@@ -125,7 +125,7 @@ public partial class AutoFightConfig : ObservableObject
         
         //检查结束方式
         [ObservableProperty]
-        private bool _endModel = true;
+        private bool _endModel = false;
         
         //快速检查方式的延时，默认为0.15秒
         [ObservableProperty] 
