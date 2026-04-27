@@ -87,19 +87,19 @@ public partial class AutoFightConfig : ObservableObject
         /// 检查战斗结束的延时，即角色，默认为1.5秒。也可以指定特定角色之后延时多少时间检查。格式如：2.5;白术,1.5;钟离,1.0;
         /// </summary>
         [ObservableProperty]
-        private string _checkEndDelay = "";
+        private string _checkEndDelay = "0.4;钟离,1.4;";
 
         /// <summary>
         /// 按下切换队伍后去检查屏幕色块的延迟，默认为0.45秒。若频繁误判可以适当提高这个值。确保这个延迟不会真的把队伍配置界面切出来。
         /// </summary>
         [ObservableProperty]
-        private string _beforeDetectDelay = "";
+        private string _beforeDetectDelay = "0.4";
         
         /// <summary>
-        /// 旋转寻找敌人位置的旋转因子，默认为5，越大越快。
+        /// 旋转寻找敌人位置的旋转因子，默认为12（范围1-13），越大越快。
         /// </summary>
         [ObservableProperty]
-        private int _rotaryFactor = 10;
+        private int _rotaryFactor = 12;
         
         /// <summary>
         /// 是否是第一次检查和面敌。
@@ -195,6 +195,9 @@ public partial class AutoFightConfig : ObservableObject
      [ObservableProperty]
      private bool _qinDoublePickUp = false;
      
+    [ObservableProperty]
+    private bool _swimmingEnabled = true;
+
     /// <summary>
     /// 战斗结束后，如果不存在万叶，则切换至存在万叶的队伍（基于开启万叶拾取情况下）
     /// </summary>
@@ -206,9 +209,6 @@ public partial class AutoFightConfig : ObservableObject
     /// </summary>
     [ObservableProperty]
     private int _timeout = 120;
-
-    [ObservableProperty]
-    private bool _swimmingEnabled = false;
     
     [ObservableProperty]
     private bool _takeMedicineEnabled = false;
