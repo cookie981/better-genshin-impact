@@ -2158,7 +2158,7 @@ public class PathExecutor
                             distanceTooFarRetryCount++;
                             // 坐标稳定但距离一直>500，可能是传送后首次识别就错了
                             // 累积超过10次后触发全局匹配重新定位
-                            if (distanceTooFarRetryCount > 5)
+                            if (distanceTooFarRetryCount > 3)
                             {
                                 Logger.LogWarning($"距离持续>500达{distanceTooFarRetryCount}次，触发全局匹配重新定位");
                                 Navigation.Reset();

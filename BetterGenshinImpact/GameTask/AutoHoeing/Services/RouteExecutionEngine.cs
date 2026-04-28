@@ -87,10 +87,11 @@ public class RouteExecutionEngine
                     var executor = new PathExecutor(ct);
                     executor.PartyConfig = _partyConfig;
                     
-                    // 联机模式：注入 MultiplayerCoordinator
+                    // 联机模式：注入 MultiplayerCoordinator，并禁用自动领取派遣
                     if (_config.MultiplayerEnabled && _coordinator != null)
                     {
                         executor.MultiplayerCoordinator = _coordinator;
+                        executor.PartyConfig.DisableAutoFetchDispatch = true;
                         Logger.LogInformation("[联机] 已注入 MultiplayerCoordinator 到 PathExecutor，路线: {Name}", route.FileName);
                     }
                     else

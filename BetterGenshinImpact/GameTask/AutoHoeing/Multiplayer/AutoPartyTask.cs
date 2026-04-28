@@ -163,6 +163,7 @@ public class AutoPartyTask
         try
         {
             var deadline = DateTime.Now.AddSeconds(timeoutSeconds);
+            bool skipMainUiCheck = false; // 重新打开 F2 后跳过一次顶部主界面检测
             while (DateTime.Now < deadline)
             {
                 ct.ThrowIfCancellationRequested();
@@ -180,16 +181,34 @@ public class AutoPartyTask
                     return currentCount > 0 ? currentCount : 1;
                 }
 
-                // 检测 ESC（用户手动关闭了 F2，视为跳过）
-                using (var checkRa = CaptureToRectArea())
+                // 检测 ESC（用户手动关闭了 F2，视为跳过）或加载后回到主界面
+                // skipMainUiCheck 为 true 时跳过，避免重新打开 F2 后误判
+                if (!skipMainUiCheck)
                 {
-                    if (Bv.IsInMainUi(checkRa))
+                    using (var checkRa = CaptureToRectArea())
                     {
-                        var currentCount = client.CurrentRoomPlayerCount;
-                        _logger.LogInformation("[自动组队-房主] 检测到已回到主界面，以当前 {N} 人开始锄地", currentCount);
-                        return currentCount > 0 ? currentCount : 1;
+                        if (Bv.IsInMainUi(checkRa))
+                        {
+                            var currentCount = client.CurrentRoomPlayerCount;
+                            // 人数已满，直接开始
+                            if (currentCount >= expectedCount)
+                            {
+                                _logger.LogInformation("[自动组队-房主] 检测到主界面且人数已满 {N}，开始锄地", currentCount);
+                                return currentCount;
+                            }
+                            // 人数未满，可能是加载完成回到主界面，重新打开 F2 继续等待
+                            _logger.LogInformation("[自动组队-房主] 检测到主界面但人数未满（{Count}/{Expected}），重新打开 F2 继续等待", currentCount, expectedCount);
+                            if (!await OpenCoOpScreen(ct, whitelist))
+                            {
+                                _logger.LogWarning("[自动组队-房主] 重新打开 F2 失败，等待加载完成后重试");
+                                await WaitForMainUi(ct, 15);
+                            }
+                            skipMainUiCheck = true;
+                            continue;
+                        }
                     }
                 }
+                skipMainUiCheck = false;
 
                 // 先按 Y 触发申请弹窗
                 Simulation.SendInput.Keyboard.KeyPress(User32.VK.VK_Y);
@@ -258,12 +277,15 @@ public class AutoPartyTask
                         return client.CurrentRoomPlayerCount;
                     }
 
-                    if (!await OpenCoOpScreen(ct))
+                    if (!await OpenCoOpScreen(ct, whitelist))
                     {
                         _logger.LogWarning("[自动组队-房主] 重新打开 F2 失败，重试");
                         await Delay(2000, ct);
                         continue;
                     }
+                    // 重新打开 F2 成功，跳回循环顶部，并跳过一次主界面检测（F2 刚打开，主界面已不可见）
+                    skipMainUiCheck = true;
+                    continue;
                 }
                 else
                 {
@@ -323,8 +345,8 @@ public class AutoPartyTask
         _logger.LogInformation("[自动组队] 已输入 UID {Uid} 并搜索", uid);
     }
 
-    /// <summary>打开 F2 多人游戏界面，重试 3 次</summary>
-    private async Task<bool> OpenCoOpScreen(CancellationToken ct)
+    /// <summary>打开 F2 多人游戏界面，重试 3 次。每次重试间隙检测申请弹窗并处理。</summary>
+    private async Task<bool> OpenCoOpScreen(CancellationToken ct, string[]? whitelist = null)
     {
         for (int i = 0; i < 3; i++)
         {
@@ -337,6 +359,44 @@ public class AutoPartyTask
             {
                 _logger.LogInformation("[自动组队] F2 界面已打开");
                 return true;
+            }
+
+            // F2 未打开，检测是否有申请弹窗（加载中主界面也可见弹窗）
+            var popupFound = ra.Find(ConfirmBtnRo).IsExist();
+            if (popupFound)
+            {
+                _logger.LogInformation("[自动组队] 打开 F2 失败但检测到申请弹窗，处理中");
+                var shouldAccept = true;
+                if (whitelist != null && whitelist.Length > 0)
+                {
+                    var applicantName = OcrApplicantName();
+                    if (!string.IsNullOrEmpty(applicantName))
+                    {
+                        shouldAccept = IsInWhitelist(applicantName, whitelist);
+                        _logger.LogInformation("[自动组队] OCR 识别申请者: {Name}，白名单匹配: {Match}", applicantName, shouldAccept);
+                    }
+                    else
+                    {
+                        _logger.LogWarning("[自动组队] OCR 识别失败，跳过本次申请");
+                        shouldAccept = false;
+                    }
+                }
+                if (shouldAccept)
+                {
+                    ClickConfirmButton();
+                    await Delay(300, ct);
+                    ClickConfirmButton();
+                    await Delay(700, ct);
+                }
+                else
+                {
+                    ClickRejectButton();
+                    await Delay(500, ct);
+                }
+                // 处理完弹窗后继续尝试打开 F2（不计入重试次数，直接进入下一次循环）
+                i--; // 不消耗重试次数
+                if (i < -1) i = -1; // 防止无限递减
+                continue;
             }
 
             _logger.LogWarning("[自动组队] 打开 F2 失败，重试 {N}/3", i + 1);

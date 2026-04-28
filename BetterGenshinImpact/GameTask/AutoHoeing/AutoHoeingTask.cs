@@ -101,9 +101,7 @@ public class AutoHoeingTask : ISoloTask
             // 这些字段若配置组 settings 里有显式配置，ApplySettingsOverride 会覆盖；
             // 若没有配置，则保持干净的默认值，不受上一次执行的残留影响
             _config.MultiplayerEnabled = false;
-            _config.UseFixedDebugRoutes = false;
-            _config.FixedDebugRoutePath = "";
-            _config.SelectedBuiltinRoute = "";
+            // _config.SelectedBuiltinRoute 不重置，由 ApplySettingsOverride 从 settings 中读取（若有）
             _config.DebugMode = false;
             _config.StartRouteIndex = 0;
             _config.SyncTimeoutSeconds = 60;
@@ -648,10 +646,7 @@ public class AutoHoeingTask : ISoloTask
                     var joinOk = await autoParty.JoinHostWorldAsync(hostUid, _ct);
                     if (joinOk)
                     {
-                        var hotkeyHint = string.IsNullOrEmpty(TaskContext.Instance().Config.HotKeyConfig.SkipPartyWaitHotkey)
-                            ? "（可在快捷键设置中配置快捷键）"
-                            : $"（可按快捷键 {TaskContext.Instance().Config.HotKeyConfig.SkipPartyWaitHotkey} 立即开始）";
-                        _logger.LogInformation("[联机] 已进入房主世界，等待所有人就绪...{Hint}", hotkeyHint);
+                        _logger.LogInformation("[联机] 已进入房主世界，等待所有人就绪...");
 
                         // 先注册 AllWorldJoined 监听，再上报，避免信号在上报和等待之间丢失
                         var waitTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -899,6 +894,11 @@ public class AutoHoeingTask : ISoloTask
         // 联机模式初始化
         if (_config.MultiplayerEnabled)
         {
+            // 联机模式下禁用自动领取派遣，避免打断锄地流程
+            // （_partyConfig 为 null 时由 RouteExecutionEngine 在每条路线执行前处理）
+            if (_partyConfig != null)
+                _partyConfig.DisableAutoFetchDispatch = true;
+
             // 联机前准备：切换队伍和角色
             await PrepareMultiplayerPartyAndAvatar();
             
@@ -2102,8 +2102,12 @@ public class AutoHoeingTask : ISoloTask
         // 单机和联机均支持的字段
         _config.StartRouteIndex = Get("startRouteIndex", _config.StartRouteIndex);
         _config.DebugMode = Get("debugMode", _config.DebugMode);
-        _config.UseFixedDebugRoutes = Get("useFixedDebugRoutes", _config.UseFixedDebugRoutes);
-        _config.FixedDebugRoutePath = Get("fixedDebugRoutePath", _config.FixedDebugRoutePath);
+        if (_settingsOverride.ContainsKey("useFixedDebugRoutes"))
+            _config.UseFixedDebugRoutes = Get("useFixedDebugRoutes", _config.UseFixedDebugRoutes);
+        if (_settingsOverride.ContainsKey("fixedDebugRoutePath"))
+            _config.FixedDebugRoutePath = Get("fixedDebugRoutePath", _config.FixedDebugRoutePath);
+        if (_settingsOverride.ContainsKey("selectedBuiltinRoute"))
+            _config.SelectedBuiltinRoute = Get("selectedBuiltinRoute", _config.SelectedBuiltinRoute);
 
         _config.MultiWorldEnabled = Get("multiWorldEnabled", _config.MultiWorldEnabled);
         _config.MultiWorldCount = Get("multiWorldCount", _config.MultiWorldCount);

@@ -19,6 +19,8 @@ using BetterGenshinImpact.ViewModel.Pages.View;
 using BetterGenshinImpact.ViewModel.Windows.Editable;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using CommunityToolkit.Mvvm.Messaging;
+using CommunityToolkit.Mvvm.Messaging.Messages;
 using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
@@ -60,6 +62,12 @@ public partial class ScriptControlViewModel : ViewModel
     [ObservableProperty] private Boolean _isInsetMode = false;
     
     [ObservableProperty] private OneDragonFlowViewModel? _viewModel;
+
+    /// <summary>
+    /// 锄地一条龙是否已解锁（用于 UI 绑定，响应解锁事件实时刷新）
+    /// </summary>
+    [ObservableProperty]
+    private bool _isHoeingUnlocked = TaskSettingsPageViewModel.AutoHoeingUnlocked;
     
     public static OtherConfig OtherConfig { get; set; } = TaskContext.Instance().Config.OtherConfig;
 
@@ -98,6 +106,11 @@ public partial class ScriptControlViewModel : ViewModel
         _snackbarService = snackbarService;
         _scriptService = scriptService;
         ScriptGroups.CollectionChanged += ScriptGroupsCollectionChanged;
+        WeakReferenceMessenger.Default.Register<PropertyChangedMessage<object>>(this, (_, msg) =>
+        {
+            if (msg.PropertyName == "AutoHoeingUnlocked")
+                IsHoeingUnlocked = TaskSettingsPageViewModel.AutoHoeingUnlocked;
+        });
     }
     
     public ScriptControlViewModel(ISnackbarService snackbarService, IScriptService scriptService,
@@ -109,6 +122,11 @@ public partial class ScriptControlViewModel : ViewModel
         SelectedScriptGroup = selectedScriptGroup;
         _isInsetMode = isInsetMode;
         ScriptGroups.CollectionChanged += ScriptGroupsCollectionChanged;
+        WeakReferenceMessenger.Default.Register<PropertyChangedMessage<object>>(this, (_, msg) =>
+        {
+            if (msg.PropertyName == "AutoHoeingUnlocked")
+                IsHoeingUnlocked = TaskSettingsPageViewModel.AutoHoeingUnlocked;
+        });
     }
     
     public void ConfigureServices(IServiceCollection services)

@@ -323,6 +323,7 @@ public partial class TaskSettingsPageViewModel : ViewModel
             AutoHoeingUnlocked = newState;
             Config.CommonConfig.AutoHoeingUnlocked = newState;
             Wpf.Ui.Violeta.Controls.Toast.Success(newState ? "锄地一条龙已解锁" : "锄地一条龙已锁定");
+            WeakReferenceMessenger.Default.Send(new PropertyChangedMessage<object>(this, "AutoHoeingUnlocked", !newState, newState));
         }
     }
 
