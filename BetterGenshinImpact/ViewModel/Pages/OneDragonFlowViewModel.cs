@@ -2213,6 +2213,8 @@ public partial class OneDragonFlowViewModel : ViewModel
     [RelayCommand]
     public async Task OnOneKeyExecute()
     {
+        CancellationContext.Instance.Set();
+        
         if (!_continuousExecutionMark)
         {  
             _lastUid = "";
@@ -2440,6 +2442,12 @@ public partial class OneDragonFlowViewModel : ViewModel
          _logger.LogInformation($"启用配置组任务的数量: {enabledTaskCount}");
         
         await ScriptService.StartGameTask();
+        if (CancellationContext.Instance.IsCancellationRequested)
+        {
+            _logger.LogInformation("一条龙在启动阶段被取消");
+            return;
+        }
+
         SaveConfig();
         
         if (enabledoneTaskCount <= 0)

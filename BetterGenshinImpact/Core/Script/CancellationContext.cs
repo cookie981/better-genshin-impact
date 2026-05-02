@@ -1,4 +1,5 @@
-﻿using BetterGenshinImpact.Model;
+﻿using System;
+using BetterGenshinImpact.Model;
 using System.Threading;
 using System.Collections.Generic;
 
@@ -6,11 +7,24 @@ namespace BetterGenshinImpact.Core.Script;
 
 public class CancellationContext : Singleton<CancellationContext>
 {
-    public CancellationTokenSource Cts;
+
     private List<CancellationTokenSource> _externalCtsList;
 
     public CancellationToken Token => Cts.Token;
+    private readonly object _sync = new();
+    public CancellationTokenSource Cts { get; private set; } = new();
     public bool IsManualStop { get; private set; }
+
+    public bool IsCancellationRequested
+    {
+        get
+        {
+            lock (_sync) 
+            {
+                return !disposed && Cts.IsCancellationRequested; 
+            }
+        }
+    }
 
     private bool disposed;
 
@@ -43,10 +57,23 @@ public class CancellationContext : Singleton<CancellationContext>
 
     public void ManualCancel()
     {
-        if (!disposed)
+        CancellationTokenSource cts;
+        lock (_sync)
         {
+            if (disposed)
+            {
+                return;
+            }
+
             IsManualStop = true;
-            Cts.Cancel();
+            try
+            {
+                Cts.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+                // 并发 Clear 可能已释放 CTS，这里视为已取消/已清理。
+            }
 
             foreach (var externalCts in _externalCtsList)
             {
@@ -60,9 +87,24 @@ public class CancellationContext : Singleton<CancellationContext>
 
     public void Cancel()
     {
-        if (!disposed)
+        CancellationTokenSource cts;
+        lock (_sync)
         {
-            Cts.Cancel();
+            if (disposed)
+            {
+                return;
+            }
+
+            cts = Cts;
+        }
+
+        try
+        {
+            cts.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+            // 并发 Clear 可能已释放 CTS，这里视为已取消/已清理。
         }
     }
 
@@ -75,5 +117,18 @@ public class CancellationContext : Singleton<CancellationContext>
         }
         _externalCtsList.Clear();
         disposed = true;
+        CancellationTokenSource cts;
+        lock (_sync)
+        {
+            if (disposed)
+            {
+                return;
+            }
+
+            cts = Cts;
+            disposed = true;
+        }
+
+        cts.Dispose();
     }
 }
