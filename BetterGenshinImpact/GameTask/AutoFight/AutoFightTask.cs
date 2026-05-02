@@ -1318,7 +1318,26 @@ public class AutoFightTask : ISoloTask
                     }
                     else
                     {
+                        Simulation.SendInput.SimulateAction(GIActions.NormalAttack);
+                        picker.TrySwitch(20);
                         TaskControl.Logger.LogInformation("距最近一次万叶出招，时间过短，跳过此次万叶拾取！");
+                        if (!await AutoFightSkill.AvatarSkillAsync(Logger, picker, false, 1, ct))
+                        {
+                            // Logger.LogWarning("11111111");
+                            picker.UseSkill(true);
+                        }
+                        else
+                        {
+                            using var ra = CaptureToRectArea();
+                            if (!picker.IsActive(ra))
+                            {
+                                picker.TrySwitch(20);
+                            }
+
+                            // Logger.LogWarning("222222");
+                            picker.UseSkill(true);
+                        }
+                        Simulation.SendInput.SimulateAction(GIActions.NormalAttack);
                     }
                 }
                 else if (picker.Name == "琴")
