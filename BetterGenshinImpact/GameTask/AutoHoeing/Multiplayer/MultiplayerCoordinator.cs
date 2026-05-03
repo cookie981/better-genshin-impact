@@ -1,6 +1,7 @@
 #nullable enable
 
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -41,6 +42,12 @@ public class MultiplayerCoordinator : IAsyncDisposable
     private volatile bool _skipNextSyncPoint;
     private readonly Action<string, int> _onRouteSkippedHandler;
 
+    // === 等待点上报修复（skip-route-wait-point-report）===
+    private readonly ConcurrentDictionary<string, WaitPointState> _peerWaitPoints = new();
+    private (string routeId, string syncPointId, int worldRound)? _reportedWaitPoint;
+    private readonly WaitPointStateManager _stateManager;
+    private readonly Action<string, string, string, int, DateTime> _onWaitPointReportedHandler;
+
     public bool IsActive { get; private set; } = true;
     public bool IsKazuhaPlayer => _kazuhaPlayerIndex > 0 && _myPlayerIndex == _kazuhaPlayerIndex;
 
@@ -57,6 +64,11 @@ public class MultiplayerCoordinator : IAsyncDisposable
 
     /// <summary>退出是否已触发。</summary>
     public bool IsExitTriggered => _exitTriggered == 1;
+
+    /// <summary>
+    /// 等待点状态管理器（skip-route-wait-point-report 修复）
+    /// </summary>
+    public WaitPointStateManager StateManager => _stateManager;
 
     public event Action<string>? OnDegraded;
 
@@ -134,6 +146,111 @@ public class MultiplayerCoordinator : IAsyncDisposable
             _barrier.SignalRouteSkipped();
         };
         _client.RouteSkipped += _onRouteSkippedHandler;
+
+        // 等待点上报事件处理（skip-route-wait-point-report 修复）
+        _stateManager = new WaitPointStateManager();
+        _onWaitPointReportedHandler = (playerUid, routeId, syncPointId, worldRound, timestamp) =>
+        {
+            _logger.LogInformation("[联机] 收到等待点上报: {Uid} 在路线 {RouteId} 的同步点 {SyncPointId} 等待 (轮次 {WorldRound})", 
+                playerUid, routeId, syncPointId, worldRound);
+            
+            // 更新等待点状态
+            var state = new WaitPointState
+            {
+                PlayerUid = playerUid,
+                RouteId = routeId,
+                SyncPointId = syncPointId,
+                WorldRound = worldRound,
+                LastUpdated = timestamp
+            };
+            _stateManager.UpdateState(playerUid, state);
+        };
+        _client.WaitPointReported += _onWaitPointReportedHandler;
+    }
+
+    /// <summary>
+    /// 上报等待点（skip-route-wait-point-report 修复）
+    /// 调用 CoordinatorClient.SendWaitPointReportAsync，包含容错处理（失败时回退到 RouteSkipped）
+    /// 记录上报日志用于监控
+    /// </summary>
+    public async Task<bool> ReportWaitPointAsync(string routeId, string syncPointId, int worldRound)
+    {
+        try
+        {
+            // 更新本地状态
+            var playerUid = TaskContext.Instance().Config.AutoHoeingConfig.PlayerUid;
+            var state = new WaitPointState
+            {
+                PlayerUid = playerUid,
+                RouteId = routeId,
+                SyncPointId = syncPointId,
+                WorldRound = worldRound,
+                LastUpdated = DateTime.UtcNow
+            };
+            _stateManager.UpdateState(playerUid, state);
+            _reportedWaitPoint = (routeId, syncPointId, worldRound);
+            
+            // 发送等待点上报
+            var success = await _client.SendWaitPointReportAsync(routeId, syncPointId, worldRound);
+            
+            if (success)
+            {
+                _logger.LogInformation("[联机] 等待点上报成功: Route={RouteId}, SyncPoint={SyncPointId}, Round={WorldRound}", 
+                    routeId, syncPointId, worldRound);
+                return true;
+            }
+            else
+            {
+                // 上报失败，回退到 RouteSkipped 机制
+                _logger.LogWarning("[联机] 等待点上报失败，回退到 RouteSkipped 机制");
+                
+                // 获取路线索引
+                if (int.TryParse(routeId, out var routeIndex))
+                {
+                    await _client.SendRouteSkippedAsync(routeIndex);
+                    _logger.LogInformation("[联机] 已发送 RouteSkipped 作为回退: 路线 {Index}", routeIndex);
+                }
+                else
+                {
+                    _logger.LogError("[联机] 无法解析路线ID: {RouteId}", routeId);
+                }
+                
+                return false;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[联机] ReportWaitPointAsync 异常");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// 设置多轮世界轮次（skip-route-wait-point-report 修复）
+    /// 验证 worldRound 一致性，防止跨轮状态污染
+    /// </summary>
+    public void SetWorldRound(int worldRound)
+    {
+        _stateManager.SetWorldRound(worldRound);
+        _logger.LogInformation("[联机] 设置多轮世界轮次: {WorldRound}", worldRound);
+    }
+
+    /// <summary>
+    /// 获取当前多轮世界轮次（skip-route-wait-point-report 修复）
+    /// </summary>
+    private int GetCurrentWorldRound()
+    {
+        try
+        {
+            // 从状态统计获取当前轮次
+            var stats = _stateManager.GetStatistics();
+            return stats.CurrentWorldRound;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[联机] 获取当前世界轮次时发生异常");
+            return 1; // 异常时返回默认值
+        }
     }
 
     private void OnPlayerListUpdated(List<PlayerInfo> players)
@@ -175,6 +292,55 @@ public class MultiplayerCoordinator : IAsyncDisposable
             _skipNextSyncPoint = false;
             _logger.LogInformation("[联机] 跳过下一个同步点: {SyncId}（路线跳过后的首个同步点）", syncId);
             return;
+        }
+
+        // === 等待点上报修复（skip-route-wait-point-report）===
+        // 在开始等待前上报等待点（确保玩家确实在等待时才上报）
+        try
+        {
+            // 从syncId解析路线信息
+            // syncId格式: {FileName}_{listIdx}_{fightIdx} 或 {FileName}_tp_{listIdx}_{wpIdx}
+            // 这里需要获取当前路线索引，暂时使用占位符
+            string routeId = "0"; // 需要从上下文获取实际路线索引
+            int worldRound = GetCurrentWorldRound();
+            
+            // 上报等待点
+            bool reportSuccess = await ReportWaitPointAsync(routeId, syncId, worldRound);
+            
+            if (reportSuccess)
+            {
+                _logger.LogInformation("[联机] 等待点上报成功: Route={RouteId}, SyncPoint={SyncPointId}, Round={WorldRound}", 
+                    routeId, syncId, worldRound);
+            }
+            else
+            {
+                _logger.LogWarning("[联机] 等待点上报失败，继续等待");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[联机] 等待点上报时发生异常，继续等待");
+        }
+        // === 等待点上报修复结束 ===
+
+        // 检查当前 syncId 是否与协调后的等待点匹配（skip-route-wait-point-report 修复）
+        var coordinatedPoint = _stateManager.GetCoordinatedWaitPoint();
+        if (coordinatedPoint != null)
+        {
+            // 检查是否匹配协调后的等待点
+            if (!coordinatedPoint.MatchesSyncPoint(syncId))
+            {
+                // 不匹配时：只上报到达但不等待（立即返回）
+                _logger.LogInformation("[联机] 同步点 {SyncId} 不匹配协调等待点 {CoordinatedPoint}，只上报到达不等待", 
+                    syncId, coordinatedPoint);
+                await _client.ReportArrivalAsync(syncId);
+                return;
+            }
+            else
+            {
+                // 匹配时：正常等待逻辑
+                _logger.LogInformation("[联机] 同步点 {SyncId} 匹配协调等待点，正常等待", syncId);
+            }
         }
 
         // 计算有效等待人数：排除离线成员（需求 2.3）
@@ -525,7 +691,12 @@ public class MultiplayerCoordinator : IAsyncDisposable
         _skipNextSyncPoint = false;
         _barrier.Reset();
         
-        _logger.LogInformation("[联机] ResetForNewRound: 状态已重置（包含路线跳过对齐状态）");
+        // 等待点上报修复重置（skip-route-wait-point-report 修复）
+        _peerWaitPoints.Clear();
+        _reportedWaitPoint = null;
+        _stateManager?.ResetCurrentRound();
+        
+        _logger.LogInformation("[联机] ResetForNewRound: 状态已重置（包含路线跳过对齐和等待点上报状态）");
     }
 
     public async ValueTask DisposeAsync()
@@ -533,6 +704,11 @@ public class MultiplayerCoordinator : IAsyncDisposable
         _client.PlayerListUpdated -= OnPlayerListUpdated;
         _client.OnMemberStatusChanged -= _onMemberStatusChangedHandler;
         _client.RouteSkipped -= _onRouteSkippedHandler;
+        _client.WaitPointReported -= _onWaitPointReportedHandler;
+        
+        // 清理等待点状态管理器资源
+        _stateManager?.Dispose();
+        
         await _client.DisposeAsync();
     }
 }

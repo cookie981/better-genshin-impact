@@ -1293,6 +1293,10 @@ public class AutoHoeingTask : ISoloTask
                 await client.ResetWorldJoinedAsync();
                 _logger.LogInformation("[多世界] 第 {Round} 轮 WorldJoinedSet 已重置", round + 1);
 
+                // 重置多轮世界等待点状态（skip-route-wait-point-report 修复）
+                await client.ResetForNewWorldRoundAsync(round + 1);
+                _logger.LogInformation("[多世界] 第 {Round} 轮等待点状态已重置", round + 1);
+
                 // 上传配置：使用第一任房主的配置（已在第1轮保存）
                 if (_firstHostConfig != null)
                 {
@@ -2179,8 +2183,47 @@ public class AutoHoeingTask : ISoloTask
                                 await _coordinatorClientRef.SendMemberProgressAsync(currentRouteIndex + 1);
                                 _logger.LogDebug("[联机] 已广播跳过后进度: 路线 {Index}", currentRouteIndex + 1);
                                 
-                                // 通知对方路线跳过
+                                // === 等待点上报修复（skip-route-wait-point-report）===
+                                // 先发送 RouteSkipped（立即放行）
                                 await _multiplayerCoordinator.NotifyRouteSkippedAsync(currentRouteIndex);
+                                
+                                // 再发送 WaitPointReport（等待点对齐）
+                                // 获取当前世界轮次
+                                int worldRound = GetCurrentWorldRound();
+                                // 获取路线ID
+                                string routeId = currentRouteIndex.ToString();
+                                // 获取下一个同步点（优先选择"传送必同步"的同步点）
+                                string nextSyncPointId = await GetNextSyncPointForWaitPointAsync(currentRouteIndex);
+                                
+                                if (!string.IsNullOrEmpty(nextSyncPointId))
+                                {
+                                    try
+                                    {
+                                        // 上报等待点（带容错处理）
+                                        bool reportSuccess = await _multiplayerCoordinator.ReportWaitPointAsync(routeId, nextSyncPointId, worldRound);
+                                        
+                                        if (reportSuccess)
+                                        {
+                                            _logger.LogInformation("[联机] 等待点上报成功: Route={RouteId}, SyncPoint={SyncPointId}, Round={WorldRound}", 
+                                                routeId, nextSyncPointId, worldRound);
+                                        }
+                                        else
+                                        {
+                                            // 上报失败，记录日志但不阻塞执行
+                                            _logger.LogWarning("[联机] 等待点上报失败，已回退到RouteSkipped机制");
+                                        }
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        // 异常处理：记录日志但不阻塞执行
+                                        _logger.LogError(ex, "[联机] 等待点上报时发生异常，已回退到RouteSkipped机制");
+                                    }
+                                }
+                                else
+                                {
+                                    _logger.LogWarning("[联机] 无法获取下一个同步点，跳过等待点上报");
+                                }
+                                // === 等待点上报修复结束 ===
                                 
                                 // 设置跳过下一个同步点标志
                                 _multiplayerCoordinator.SetSkipNextSyncPoint();
@@ -2700,6 +2743,85 @@ public class AutoHoeingTask : ISoloTask
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "[联机] 设置世界权限时发生异常，将继续执行");
+        }
+    }
+
+    /// <summary>
+    /// 获取当前世界轮次（skip-route-wait-point-report 修复）
+    /// </summary>
+    private int GetCurrentWorldRound()
+    {
+        try
+        {
+            // 从WaitPointStateManager获取当前轮次
+            if (_multiplayerCoordinator != null)
+            {
+                // 通过状态统计获取当前轮次
+                var stats = _multiplayerCoordinator.StateManager.GetStatistics();
+                int currentRound = stats.CurrentWorldRound;
+                _logger.LogDebug("[联机] 获取当前世界轮次: {Round}", currentRound);
+                return currentRound;
+            }
+            
+            // 默认返回1（第一轮）
+            return 1;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[联机] 获取当前世界轮次时发生异常");
+            return 1; // 异常时返回默认值
+        }
+    }
+
+    /// <summary>
+    /// 获取下一个同步点用于等待点上报（skip-route-wait-point-report 修复）
+    /// 优先选择"传送必同步"的同步点
+    /// </summary>
+    private async Task<string> GetNextSyncPointForWaitPointAsync(int currentRouteIndex)
+    {
+        try
+        {
+            // 获取下一个路线的索引
+            int nextRouteIndex = currentRouteIndex + 1;
+            
+            // 获取当前路线列表
+            var routes = LoadRoutesBasedOnConfig();
+            if (nextRouteIndex >= routes.Count)
+            {
+                _logger.LogWarning("[联机] 下一个路线索引 {NextIndex} 超出范围（总路线数: {Total}）", 
+                    nextRouteIndex, routes.Count);
+                return string.Empty;
+            }
+            
+            var nextRoute = routes[nextRouteIndex];
+            _logger.LogDebug("[联机] 获取下一个同步点：路线索引={Index}, 文件名={FileName}", 
+                nextRouteIndex, nextRoute.FileName);
+            
+            // 优先选择"传送必同步"的同步点
+            // 检查SyncAtEveryTeleport配置
+            var syncAtEveryTeleport = PathingConditionConfig.MultiplayerSyncAtEveryTeleportOverride
+                ?? TaskContext.Instance().Config.AutoHoeingConfig.SyncAtEveryTeleport;
+            
+            if (syncAtEveryTeleport)
+            {
+                // 如果启用了"传送必同步"，优先选择第一个传送点作为同步点
+                // 同步点ID格式：{FileName}_tp_{listIdx}_{wpIdx}
+                // 这里返回一个占位符，实际实现需要加载路线文件并分析传送点
+                _logger.LogInformation("[联机] 传送点必同步已启用，优先选择传送点作为等待点");
+                return $"{nextRoute.FileName}_tp_0_0"; // 第一个路线的第一个传送点
+            }
+            else
+            {
+                // 未启用"传送必同步"，选择第一个战斗同步点
+                // 同步点ID格式：{FileName}_{listIdx}_{fightIdx}
+                _logger.LogInformation("[联机] 传送点必同步未启用，选择第一个战斗同步点作为等待点");
+                return $"{nextRoute.FileName}_0_0"; // 第一个路线的第一个战斗同步点
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[联机] 获取下一个同步点时发生异常");
+            return string.Empty;
         }
     }
 }

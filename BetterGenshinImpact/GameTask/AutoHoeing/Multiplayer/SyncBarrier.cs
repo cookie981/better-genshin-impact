@@ -1,11 +1,33 @@
 #nullable enable
 
 using System;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 
 namespace BetterGenshinImpact.GameTask.AutoHoeing.Multiplayer;
+
+/// <summary>
+/// 等待点信息（用于 SyncBarrier 缓存）
+/// </summary>
+public class WaitPointInfo
+{
+    public string SyncPointId { get; set; } = string.Empty;
+    public DateTime ReceivedTime { get; set; }
+    public string RouteId { get; set; } = string.Empty;
+    public int WorldRound { get; set; }
+    
+    public bool IsExpired(TimeSpan expiry)
+    {
+        return DateTime.UtcNow - ReceivedTime > expiry;
+    }
+    
+    public override string ToString()
+    {
+        return $"WaitPointInfo[SyncPoint={SyncPointId}, Route={RouteId}, Round={WorldRound}, Received={ReceivedTime:HH:mm:ss}]";
+    }
+}
 
 public class SyncBarrier
 {
@@ -16,6 +38,12 @@ public class SyncBarrier
     // === 路线跳过对齐修复（sync-point-route-skip-alignment）===
     private CancellationTokenSource? _routeSkippedCts;
     private volatile bool _routeSkippedSignalPending;
+
+    // === 等待点上报修复（skip-route-wait-point-report）===
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, WaitPointInfo> _recentWaitPoints = new();
+    private const int MaxRecentWaitPoints = 10;
+    private readonly object _waitPointLock = new();
+    private string? _currentWaitingSyncPoint;
 
     public SyncBarrier(CoordinatorClient client, int timeoutSeconds = 60)
     {
@@ -32,6 +60,14 @@ public class SyncBarrier
         {
             _routeSkippedSignalPending = false;
             _logger.LogInformation("[SyncBarrier] 检测到路线跳过信号，立即放行集合点: {SyncId}", syncPointId);
+            return false;
+        }
+        
+        // 检查是否有等待点上报需要跳过等待（skip-route-wait-point-report 修复）
+        if (ShouldSkipWaitForSyncPoint(syncPointId))
+        {
+            _logger.LogInformation("[SyncBarrier] 同步点 {SyncId} 匹配等待点上报，只上报到达不等待", syncPointId);
+            await _client.ReportArrivalAsync(syncPointId);
             return false;
         }
         
@@ -83,6 +119,84 @@ public class SyncBarrier
             _client.AllArrived -= handler;
             // 清理路线跳过专用的 CancellationTokenSource（sync-point-route-skip-alignment 修复）
             Interlocked.Exchange(ref _routeSkippedCts, null)?.Dispose();
+            // 清理当前等待的同步点状态
+            if (_currentWaitingSyncPoint == syncPointId)
+            {
+                _currentWaitingSyncPoint = null;
+            }
+        }
+    }
+
+    /// <summary>
+    /// 检查是否应该跳过指定同步点的等待（skip-route-wait-point-report 修复）
+    /// 支持延迟到达的等待点上报（缓存最近N个）
+    /// </summary>
+    private bool ShouldSkipWaitForSyncPoint(string syncPointId)
+    {
+        try
+        {
+            // 清理过期等待点（超过60秒）
+            var expiredKeys = _recentWaitPoints
+                .Where(kv => kv.Value.IsExpired(TimeSpan.FromSeconds(60)))
+                .Select(kv => kv.Key)
+                .ToList();
+            
+            foreach (var key in expiredKeys)
+            {
+                _recentWaitPoints.TryRemove(key, out _);
+            }
+            
+            // 检查是否有匹配的等待点
+            foreach (var waitPoint in _recentWaitPoints.Values)
+            {
+                if (waitPoint.SyncPointId == syncPointId && !waitPoint.IsExpired(TimeSpan.FromSeconds(60)))
+                {
+                    _logger.LogDebug("[SyncBarrier] 找到匹配的等待点: {WaitPoint}", waitPoint);
+                    return true;
+                }
+            }
+            
+            return false;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[SyncBarrier] ShouldSkipWaitForSyncPoint 异常");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// 记录等待点上报（skip-route-wait-point-report 修复）
+    /// 供 MultiplayerCoordinator 调用
+    /// </summary>
+    public void RecordWaitPointReport(string routeId, string syncPointId, int worldRound)
+    {
+        try
+        {
+            var waitPoint = new WaitPointInfo
+            {
+                SyncPointId = syncPointId,
+                RouteId = routeId,
+                WorldRound = worldRound,
+                ReceivedTime = DateTime.UtcNow
+            };
+            
+            _recentWaitPoints[syncPointId] = waitPoint;
+            
+            // 限制缓存大小
+            if (_recentWaitPoints.Count > MaxRecentWaitPoints)
+            {
+                var oldestKey = _recentWaitPoints
+                    .OrderBy(kv => kv.Value.ReceivedTime)
+                    .First().Key;
+                _recentWaitPoints.TryRemove(oldestKey, out _);
+            }
+            
+            _logger.LogDebug("[SyncBarrier] 记录等待点上报: {WaitPoint}", waitPoint);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[SyncBarrier] RecordWaitPointReport 异常");
         }
     }
 
@@ -101,6 +215,16 @@ public class SyncBarrier
             _logger.LogInformation("[SyncBarrier] 额外等待期间检测到路线跳过信号，立即放行: {SyncId}", syncPointId);
             return false;
         }
+        
+        // 检查是否有等待点上报需要跳过等待（skip-route-wait-point-report 修复）
+        if (ShouldSkipWaitForSyncPoint(syncPointId))
+        {
+            _logger.LogInformation("[SyncBarrier] 额外等待期间同步点 {SyncId} 匹配等待点上报，跳过额外等待", syncPointId);
+            return false;
+        }
+        
+        // 跟踪当前等待的同步点
+        _currentWaitingSyncPoint = syncPointId;
         
         var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -148,6 +272,11 @@ public class SyncBarrier
             _client.AllArrived -= handler;
             // 清理路线跳过专用的 CancellationTokenSource（sync-point-route-skip-alignment 修复）
             Interlocked.Exchange(ref _routeSkippedCts, null)?.Dispose();
+            // 清理当前等待的同步点状态
+            if (_currentWaitingSyncPoint == syncPointId)
+            {
+                _currentWaitingSyncPoint = null;
+            }
         }
     }
 
@@ -170,6 +299,11 @@ public class SyncBarrier
     {
         _routeSkippedSignalPending = false;
         Interlocked.Exchange(ref _routeSkippedCts, null)?.Dispose();
-        _logger.LogDebug("[SyncBarrier] 路线跳过状态已重置");
+        
+        // 清理等待点状态（skip-route-wait-point-report 修复）
+        _recentWaitPoints.Clear();
+        _currentWaitingSyncPoint = null;
+        
+        _logger.LogDebug("[SyncBarrier] 路线跳过状态和等待点状态已重置");
     }
 }

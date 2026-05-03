@@ -36,4 +36,13 @@ public class Room
 
     /// <summary>房主筛选后的最终路线文件名列表（按执行顺序）</summary>
     public List<string> HostRouteList { get; set; } = [];
+
+    /// <summary>当前世界轮次（多轮世界支持）</summary>
+    public int CurrentWorldRound { get; set; } = 0;
+
+    /// <summary>玩家等待点上报缓存：playerUid → WaitPointReport</summary>
+    public Dictionary<string, WaitPointReport> WaitPoints { get; set; } = [];
+
+    /// <summary>协调后的统一等待点</summary>
+    public CoordinatedWaitPoint? CoordinatedWaitPoint { get; set; }
 }

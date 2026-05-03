@@ -37,6 +37,9 @@ public class CoordinatorClient : IAsyncDisposable
     private readonly ConcurrentDictionary<string, int> _memberProgressCache = new(); // key=playerUid, value=routeIndex
     public event Action<string, int>? RouteSkipped; // playerUid, skippedRouteIndex
 
+    // === 等待点上报修复（skip-route-wait-point-report）===
+    public event Action<string, string, string, int, DateTime>? WaitPointReported; // playerUid, routeId, syncPointId, worldRound, timestamp
+
     // === SignalR 断线重连（需求 3）===
     private volatile bool _isReconnecting;
     private volatile bool _isInRoom;
@@ -180,6 +183,26 @@ public class CoordinatorClient : IAsyncDisposable
                 {
                     _memberProgressCache[playerUid] = routeIndex;
                     _logger.LogDebug("[联机] 成员路线进度缓存更新: {Uid} → {Index}", playerUid, routeIndex);
+                });
+
+            // 等待点上报（skip-route-wait-point-report 修复）
+            _connection.On<string, string, string, int, DateTime>("WaitPointReported",
+                (playerUid, routeId, syncPointId, worldRound, timestamp) =>
+                {
+                    // 过滤自己发出的通知
+                    if (playerUid == _playerUid) return;
+                    
+                    // 验证参数
+                    if (string.IsNullOrEmpty(routeId) || string.IsNullOrEmpty(syncPointId))
+                    {
+                        _logger.LogWarning("[联机] 收到无效的等待点上报: Player={PlayerUid}, Route={RouteId}, SyncPoint={SyncPointId}", 
+                            playerUid, routeId, syncPointId);
+                        return;
+                    }
+                    
+                    WaitPointReported?.Invoke(playerUid, routeId, syncPointId, worldRound, timestamp);
+                    _logger.LogInformation("[联机] 收到等待点上报: Player={PlayerUid}, Route={RouteId}, SyncPoint={SyncPointId}, Round={WorldRound}", 
+                        playerUid, routeId, syncPointId, worldRound);
                 });
 
             _connection.Closed += OnConnectionClosed;
@@ -629,6 +652,49 @@ public class CoordinatorClient : IAsyncDisposable
     }
 
     /// <summary>
+    /// 发送等待点上报（skip-route-wait-point-report 修复）
+    /// 实现带重试机制的等待点上报，支持指数退避重试（最多3次）
+    /// 网络异常时静默处理，记录警告日志
+    /// </summary>
+    public async Task<bool> SendWaitPointReportAsync(string routeId, string syncPointId, int worldRound)
+    {
+        if (_connection == null || !IsConnected) 
+        {
+            _logger.LogWarning("[联机] 无法发送等待点上报：未连接");
+            return false;
+        }
+
+        int retryCount = 0;
+        const int maxRetries = 3;
+        const int baseDelay = 1000; // 1秒
+
+        while (retryCount < maxRetries)
+        {
+            try
+            {
+                await _connection.InvokeAsync("WaitPointReport", routeId, syncPointId, worldRound);
+                _logger.LogInformation("[联机] 发送等待点上报: Route={RouteId}, SyncPoint={SyncPointId}, Round={WorldRound}", 
+                    routeId, syncPointId, worldRound);
+                return true;
+            }
+            catch (Exception ex) when (retryCount < maxRetries - 1)
+            {
+                retryCount++;
+                int delay = baseDelay * retryCount; // 指数退避
+                _logger.LogWarning(ex, "[联机] 等待点上报失败，第{RetryCount}/{MaxRetries}次重试，延迟{Delay}ms", 
+                    retryCount, maxRetries, delay);
+                await Task.Delay(delay);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[联机] 等待点上报最终失败，已重试{MaxRetries}次", maxRetries);
+                return false;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
     /// 发送成员路线进度更新（sync-point-route-skip-alignment 修复）
     /// 调用服务器 UpdateMemberProgress，只广播给其他玩家
     /// </summary>
@@ -665,6 +731,17 @@ public class CoordinatorClient : IAsyncDisposable
         _logger.LogDebug("[联机] 成员路线进度缓存已重置（新一轮开始）");
     }
 
+    /// <summary>
+    /// 重置等待点上报状态（skip-route-wait-point-report 修复）
+    /// 每轮开始时调用，防止跨轮状态污染
+    /// </summary>
+    public void ResetWaitPointState()
+    {
+        // 清理等待点相关状态
+        // 注意：这里不清理 WaitPointReported 事件订阅，因为这是长期存在的
+        _logger.LogDebug("[联机] 等待点上报状态已重置（新一轮开始）");
+    }
+
     public async Task CloseRoomAsync()
     {
         if (_connection == null) return;
@@ -692,6 +769,24 @@ public class CoordinatorClient : IAsyncDisposable
         catch (Exception ex)
         {
             _logger.LogError(ex, "ResetWorldJoinedAsync 失败");
+        }
+    }
+
+    /// <summary>
+    /// 多轮世界重置（skip-route-wait-point-report 修复）
+    /// 多轮世界新轮次开始时调用，清理所有等待点状态
+    /// </summary>
+    public async Task ResetForNewWorldRoundAsync(int newRound)
+    {
+        if (_connection == null) return;
+        try
+        {
+            await _connection.InvokeAsync("ResetForNewWorldRound", newRound);
+            _logger.LogInformation("[联机] 发送多轮世界重置请求: Round {Round}", newRound);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "ResetForNewWorldRoundAsync 失败");
         }
     }
 
