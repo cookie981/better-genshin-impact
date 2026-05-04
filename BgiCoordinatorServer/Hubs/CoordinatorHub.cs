@@ -210,6 +210,13 @@ public class CoordinatorHub : Hub
             Context.ConnectionId, routeIndex, isAbnormal, waitPointId ?? "null");
 
         _roomManager.UpdateHeartbeatWithState(Context.ConnectionId, routeIndex, isAbnormal, waitPointId);
+        
+        // === 异常中断重对齐检测（multiplayer-abort-and-realign spec）===
+        // 检测到异常玩家时，触发全员中断并重对齐
+        if (isAbnormal)
+        {
+            await CheckAbnormalAndTriggerRealignAsync(room, roomCode);
+        }
     }
 
     /// <summary>查询指定成员的路线进度（需求 6）</summary>
@@ -246,15 +253,29 @@ public class CoordinatorHub : Hub
 
         // 在 Players 列表中查找当前连接对应的 PlayerUid
         string? playerUid;
+        int? currentRouteIndex;
         lock (room)
         {
             var player = room.Players.FirstOrDefault(p => p.ConnectionId == Context.ConnectionId);
             if (player == null) return;
             playerUid = player.PlayerUid;
+            currentRouteIndex = player.CurrentRouteIndex;
+            
+            // 更新玩家异常状态标记（用于中断重对齐检测）
+            player.IsAbnormal = status == "Reviving" || status == "Rejoining";
         }
 
         // lock 外 await，避免死锁
         await Clients.Group(roomCode!).SendAsync("MemberStatusChanged", playerUid, status, version);
+        
+        // === 异常中断重对齐检测（multiplayer-abort-and-realign spec）===
+        // 当玩家进入异常状态时，触发全员中断重对齐
+        if (status == "Reviving" || status == "Rejoining")
+        {
+            _logger.LogInformation("[ReportMemberStatus] 玩家 {PlayerUid} 进入异常状态 {Status}，触发中断重对齐检测", 
+                playerUid, status);
+            await CheckAbnormalAndTriggerRealignAsync(room, roomCode!);
+        }
     }
 
     /// <summary>关闭房间（仅房主可操作）</summary>
@@ -1073,6 +1094,181 @@ public class CoordinatorHub : Hub
             int expectedCount = Math.Max(1, count);
             _logger.LogInformation("[CalculateExpectedWaitCountAll] 在线玩家总数={Total}", expectedCount);
             return expectedCount;
+        }
+    }
+
+    // ========== 异常中断重对齐机制（multiplayer-abort-and-realign spec）==========
+
+    /// <summary>
+    /// 检测异常状态并触发重对齐
+    /// 在心跳处理中调用
+    /// </summary>
+    private async Task CheckAbnormalAndTriggerRealignAsync(Room room, string roomCode)
+    {
+        List<PlayerInfo> abnormalPlayers;
+        List<PlayerInfo> normalPlayers;
+        RealignProcess? processToBroadcast = null;
+        
+        lock (room)
+        {
+            // 如果已有重对齐流程进行中，不重复触发
+            if (room.CurrentRealignProcess != null && !room.CurrentRealignProcess.IsCompleted)
+            {
+                _logger.LogDebug("[CheckAbnormalAndTriggerRealign] 房间{RoomCode}已有重对齐流程进行中，跳过", roomCode);
+                return;
+            }
+        
+            // 获取异常玩家列表（isAbnormal=true 或 心跳超时）
+            abnormalPlayers = room.Players
+                .Where(p => p.IsAbnormal || (DateTime.UtcNow - p.LastHeartbeat) > TimeSpan.FromSeconds(30))
+                .Where(p => p.CurrentRouteIndex >= 0) // 只计算已上报进度的玩家
+                .ToList();
+            
+            if (abnormalPlayers.Count == 0)
+                return;
+            
+            // 获取正常玩家列表
+            normalPlayers = room.Players
+                .Where(p => !p.IsAbnormal && (DateTime.UtcNow - p.LastHeartbeat) <= TimeSpan.FromSeconds(30))
+                .Where(p => p.CurrentRouteIndex >= 0)
+                .ToList();
+        
+            // 获取异常玩家中路线索引最小值（最落后的玩家所在的线路）
+            var minRouteIndex = abnormalPlayers
+                .Min(p => p.CurrentRouteIndex);
+        
+            // 如果所有异常玩家的路线都比正常玩家大，则使用正常玩家的路线
+            if (normalPlayers.Count > 0)
+            {
+                var normalMinRouteIndex = normalPlayers.Min(p => p.CurrentRouteIndex);
+                minRouteIndex = Math.Min(minRouteIndex, normalMinRouteIndex);
+            }
+        
+            // 创建重对齐流程
+            var process = new RealignProcess
+            {
+                TargetRouteIndex = minRouteIndex,
+                AbnormalPlayerUids = abnormalPlayers.Select(p => p.PlayerUid).ToList(),
+                Reason = $"检测到异常玩家：{string.Join(", ", abnormalPlayers.Select(p => p.PlayerName))}",
+                BroadcastTime = DateTime.UtcNow
+            };
+            
+            room.CurrentRealignProcess = process;
+            processToBroadcast = process;
+        }
+        
+        if (processToBroadcast == null) return;
+        
+        _logger.LogInformation("[CheckAbnormalAndTriggerRealign] 房间{RoomCode}触发重对齐：目标路线={Target}，异常玩家=[{Abnormal}]",
+            roomCode, processToBroadcast.TargetRouteIndex, string.Join(", ", processToBroadcast.AbnormalPlayerUids));
+        
+        // lock 外 await，避免死锁
+        // 广播中断指令
+        await Clients.Group(roomCode).SendAsync("AbortAndRealign",
+            processToBroadcast.TargetRouteIndex, processToBroadcast.AbnormalPlayerUids, processToBroadcast.Reason);
+        
+        _logger.LogInformation("[CheckAbnormalAndTriggerRealign] 已广播 AbortAndRealign: 房间={RoomCode}, 目标路线={Target}",
+            roomCode, processToBroadcast.TargetRouteIndex);
+    }
+
+    /// <summary>
+    /// 客户端上报重对齐就绪状态
+    /// </summary>
+    public async Task RealignReady(int currentRouteIndex)
+    {
+        var (room, roomCode) = _roomManager.GetRoomByConnectionId(Context.ConnectionId);
+        if (room == null || roomCode == null)
+        {
+            _logger.LogWarning("[RealignReady] 连接 {ConnId} 未在任何房间中", Context.ConnectionId);
+            return;
+        }
+        
+        string? playerUid;
+        lock (room)
+        {
+            var player = room.Players.FirstOrDefault(p => p.ConnectionId == Context.ConnectionId);
+            if (player == null)
+            {
+                _logger.LogWarning("[RealignReady] 连接 {ConnId} 不在房间玩家列表中", Context.ConnectionId);
+                return;
+            }
+            playerUid = player.PlayerUid;
+        }
+        
+        var process = room.CurrentRealignProcess;
+        if (process == null || process.IsCompleted)
+        {
+            _logger.LogWarning("[RealignReady] 房间{RoomCode}没有进行中的重对齐流程", roomCode);
+            return;
+        }
+        
+        lock (room)
+        {
+            process.ReadyPlayers.Add(playerUid!);
+            _logger.LogInformation("[RealignReady] 玩家{Player}已就绪，当前就绪人数：{Ready}/{Total}",
+                playerUid, process.ReadyPlayers.Count, room.Players.Count(p => (DateTime.UtcNow - p.LastHeartbeat) <= TimeSpan.FromSeconds(30)));
+            
+            // 检查是否所有在线玩家都已就绪
+            var onlinePlayers = room.Players
+                .Where(p => (DateTime.UtcNow - p.LastHeartbeat) <= TimeSpan.FromSeconds(30))
+                .ToList();
+            
+            if (onlinePlayers.All(p => process.ReadyPlayers.Contains(p.PlayerUid)))
+            {
+                // 所有人都已就绪，广播 StartRoute
+                process.IsCompleted = true;
+                _logger.LogInformation("[RealignReady] 房间{RoomCode}全员就绪，广播 StartRoute，目标路线={Target}",
+                    roomCode, process.TargetRouteIndex);
+                
+                // lock 外 await，避免死锁
+                _ = Task.Run(async () =>
+                {
+                    await Clients.Group(roomCode).SendAsync("StartRoute", process.TargetRouteIndex);
+                });
+            }
+        }
+    }
+
+    /// <summary>
+    /// 重对齐超时检查（定时任务，每5秒执行一次）
+    /// 通过外部定时器调用此方法
+    /// </summary>
+    public void CheckRealignTimeout()
+    {
+        foreach (var (room, roomCode) in _roomManager.GetAllRoomsWithCodes())
+        {
+            var process = room.CurrentRealignProcess;
+            if (process == null || process.IsCompleted)
+                continue;
+            
+            // 检查是否超时（30秒）
+            if ((DateTime.UtcNow - process.BroadcastTime).TotalSeconds > 30)
+            {
+                lock (room)
+                {
+                    // 标记未响应的玩家为离线
+                    var onlinePlayers = room.Players
+                        .Where(p => (DateTime.UtcNow - p.LastHeartbeat) <= TimeSpan.FromSeconds(30))
+                        .ToList();
+                    
+                    var notReadyPlayers = onlinePlayers
+                        .Where(p => !process.ReadyPlayers.Contains(p.PlayerUid))
+                        .ToList();
+                    
+                    foreach (var player in notReadyPlayers)
+                    {
+                        player.IsAbnormal = true; // 标记为异常
+                        _logger.LogWarning("[CheckRealignTimeout] 玩家{Player}未响应重对齐，标记为异常", player.PlayerName);
+                    }
+                    
+                    // 广播 StartRoute
+                    process.IsCompleted = true;
+                    _logger.LogWarning("[CheckRealignTimeout] 房间{RoomCode}重对齐超时，广播 StartRoute，目标路线={Target}",
+                        roomCode, process.TargetRouteIndex);
+                    
+                    _ = Clients.Group(roomCode).SendAsync("StartRoute", process.TargetRouteIndex);
+                }
+            }
         }
     }
 }

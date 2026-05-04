@@ -596,4 +596,15 @@ public class RoomManager
             chars[i] = CodeChars[Random.Shared.Next(CodeChars.Length)];
         return new string(chars);
     }
+
+    /// <summary>
+    /// 获取所有房间及其房间码（用于重对齐超时检查）
+    /// </summary>
+    public IEnumerable<(Room Room, string RoomCode)> GetAllRoomsWithCodes()
+    {
+        foreach (var (roomCode, room) in _rooms)
+        {
+            yield return (room, roomCode);
+        }
+    }
 }

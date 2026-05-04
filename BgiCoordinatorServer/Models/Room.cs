@@ -66,4 +66,26 @@ public class Room
     /// 用于追踪哪些玩家已到达统一等待点
     /// </summary>
     public Dictionary<string, HashSet<string>> WaitPointArrivals { get; set; } = new();
+
+    // === 异常中断重对齐机制字段（multiplayer-abort-and-realign spec）===
+
+    /// <summary>
+    /// 当前重对齐流程（null 表示没有进行中的重对齐）
+    /// 当检测到异常玩家时创建，所有玩家对齐完成后清除
+    /// </summary>
+    public RealignProcess? CurrentRealignProcess { get; set; }
+    
+    // === 强制线路同步机制字段（multiplayer-route-enforcement spec）===
+    
+    /// <summary>
+    /// 是否启用强制线路同步（默认启用）
+    /// 启用后服务器会定期检测线路偏差并强制同步
+    /// </summary>
+    public bool RouteEnforcementEnabled { get; set; } = true;
+    
+    /// <summary>
+    /// 线路偏差阈值（默认 1）
+    /// 当玩家之间线路索引差异超过此阈值时触发强制同步
+    /// </summary>
+    public int RouteEnforcementThreshold { get; set; } = 1;
 }

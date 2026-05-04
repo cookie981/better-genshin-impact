@@ -51,6 +51,29 @@ public class MultiplayerCoordinator : IAsyncDisposable
     // === 异常玩家超时退出机制 ===
     private readonly ConcurrentDictionary<string, AbnormalPlayerTimeoutContext> _abnormalPlayerTimeouts = new();
     
+    // === 异常中断重对齐机制（multiplayer-abort-and-realign spec）===
+    /// <summary>是否收到中断指令</summary>
+    private volatile bool _abortRequested;
+    /// <summary>中断后需要跳转到的目标路线索引</summary>
+    private volatile int _abortTargetRouteIndex = -1;
+    /// <summary>中断指令收到时间（用于超时检测）</summary>
+    private DateTime _abortReceivedTime;
+    /// <summary>中断重对齐指令事件处理器</summary>
+    private readonly Action<int, List<string>, string> _onAbortAndRealignReceivedHandler;
+    /// <summary>开始路线指令事件处理器</summary>
+    private readonly Action<int> _onStartRouteReceivedHandler;
+    /// <summary>等待 StartRoute 指令的信号</summary>
+    private TaskCompletionSource<int>? _startRouteTcs;
+    private readonly object _startRouteLock = new();
+    
+    // === 强制线路同步机制（multiplayer-route-enforcement spec）===
+    /// <summary>是否需要强制跳转到目标线路</summary>
+    private volatile bool _routeEnforceSyncRequested;
+    /// <summary>强制跳转目标线路索引</summary>
+    private volatile int _enforceTargetRouteIndex = -1;
+    /// <summary>强制线路同步事件处理器</summary>
+    private readonly Action<int, string, List<string>> _onRouteEnforceSyncReceivedHandler;
+    
     // === 统一等待点协调（multiplayer-abnormal-wait-coordination）===
     /// <summary>服务端指令的待处理等待点</summary>
     private PendingWaitPoint? _pendingWaitPoint;
@@ -119,6 +142,12 @@ public class MultiplayerCoordinator : IAsyncDisposable
     /// 等待点状态管理器（skip-route-wait-point-report 修复）
     /// </summary>
     public WaitPointStateManager StateManager => _stateManager;
+
+    // === 线路同步协调器（需求 10）===
+    private RouteSyncCoordinator? _routeSyncCoordinator;
+
+    // === 异常状态管理器（需求 11）===
+    private AbnormalStatusManager? _abnormalStatusManager;
 
     /// <summary>
     /// 异常玩家超时时间（5分钟）
@@ -264,7 +293,61 @@ public class MultiplayerCoordinator : IAsyncDisposable
             OnAllPlayersArrivedReceived(syncPointId);
         };
         _client.AllPlayersArrivedReceived += _onAllPlayersArrivedHandler;
+        
+        // 中断重对齐事件处理（multiplayer-abort-and-realign spec）
+        _onAbortAndRealignReceivedHandler = (targetRouteIndex, abnormalPlayerUids, reason) =>
+        {
+            _logger.LogWarning("[联机] 收到中断重对齐指令: 目标路线={TargetRoute}, 异常玩家=[{AbnormalPlayers}], 原因={Reason}", 
+                targetRouteIndex, string.Join(", ", abnormalPlayerUids.Select(GetPlayerDisplayName)), reason);
+            HandleAbortAndRealign(targetRouteIndex, abnormalPlayerUids, reason);
+        };
+        _client.AbortAndRealignReceived += _onAbortAndRealignReceivedHandler;
+        
+        // 开始路线事件处理
+        _onStartRouteReceivedHandler = targetRouteIndex =>
+        {
+            _logger.LogInformation("[联机] 收到开始路线指令: 目标路线={TargetRoute}", targetRouteIndex);
+            HandleStartRoute(targetRouteIndex);
+        };
+        _client.StartRouteReceived += _onStartRouteReceivedHandler;
+        
+        // 强制线路同步事件处理（multiplayer-route-enforcement spec）
+        _onRouteEnforceSyncReceivedHandler = (targetRouteIndex, reason, deviationInfo) =>
+        {
+            _logger.LogWarning("[联机] 收到强制线路同步指令: 目标路线={TargetRoute}, 原因={Reason}, 偏差信息=[{DevInfo}]",
+                targetRouteIndex, reason, string.Join(", ", deviationInfo));
+            HandleRouteEnforceSync(targetRouteIndex, reason, deviationInfo);
+        };
+        _client.RouteEnforceSyncReceived += _onRouteEnforceSyncReceivedHandler;
+        
+        // 初始化线路同步协调器和异常状态管理器（需求 10, 11）
+        // 注意：这些组件需要等待配置加载后才能初始化，所以这里先设为 null
+        // 在 InitializeCoordinators 方法中完成初始化
     }
+    
+    /// <summary>
+    /// 初始化线路同步协调器和异常状态管理器
+    /// 必须在构造函数后调用，因为需要 AutoHoeingConfig
+    /// </summary>
+    public void InitializeCoordinators(AutoHoeingConfig config)
+    {
+        if (_routeSyncCoordinator != null) return; // 已初始化
+        
+        _routeSyncCoordinator = new RouteSyncCoordinator(_client, this, config);
+        _abnormalStatusManager = new AbnormalStatusManager(this, _stateManager, config);
+        
+        _logger.LogInformation("[联机] RouteSyncCoordinator 和 AbnormalStatusManager 已初始化");
+    }
+    
+    /// <summary>
+    /// 获取线路同步协调器
+    /// </summary>
+    public RouteSyncCoordinator? RouteSyncCoordinator => _routeSyncCoordinator;
+    
+    /// <summary>
+    /// 获取异常状态管理器
+    /// </summary>
+    public AbnormalStatusManager? AbnormalStatusManager => _abnormalStatusManager;
     
     // === 异常玩家等待点上报辅助方法（multiplayer-abnormal-wait-coordination）===
     
@@ -618,13 +701,17 @@ public class MultiplayerCoordinator : IAsyncDisposable
     /// </summary>
     public void ClearAllAbnormalStatus()
     {
-        // 清除自己的异常状态
+        // 清除所有玩家的异常状态（不只是自己）
         var myUid = TaskContext.Instance().Config.AutoHoeingConfig.PlayerUid;
+        
+        // 清除自己的上报等待点
         if (_reportedWaitPoint.HasValue)
         {
             _reportedWaitPoint = null;
-            _stateManager.RemoveState(myUid);
         }
+        
+        // 清除状态管理器中所有玩家的异常状态
+        _stateManager.ResetCurrentRound();
         
         // 取消所有超时计时器
         foreach (var ctx in _abnormalPlayerTimeouts.Values)
@@ -634,7 +721,7 @@ public class MultiplayerCoordinator : IAsyncDisposable
         }
         _abnormalPlayerTimeouts.Clear();
         
-        _logger.LogInformation("[联机] 已清除所有异常状态");
+        _logger.LogInformation("[联机] 已清除所有异常状态（全员汇合）");
     }
 
     /// <summary>
@@ -1444,6 +1531,163 @@ public class MultiplayerCoordinator : IAsyncDisposable
     /// </summary>
     public bool IsDegraded => _isDegraded;
 
+    // === 异常中断重对齐机制（multiplayer-abort-and-realign spec）===
+    
+    /// <summary>是否收到中断指令</summary>
+    public bool IsAbortRequested => _abortRequested;
+    
+    /// <summary>获取中断后需要跳转到的目标路线索引</summary>
+    public int GetAbortTargetRouteIndex() => _abortTargetRouteIndex;
+    
+    /// <summary>
+    /// 清除中断状态（在跳转到目标路线后调用）
+    /// </summary>
+    public void ClearAbortState()
+    {
+        _abortRequested = false;
+        _abortTargetRouteIndex = -1;
+        _logger.LogInformation("[联机] 中断状态已清除");
+    }
+    
+    /// <summary>
+    /// 处理中断重对齐指令
+    /// </summary>
+    private void HandleAbortAndRealign(int targetRouteIndex, List<string> abnormalPlayerUids, string reason)
+    {
+        _abortRequested = true;
+        _abortTargetRouteIndex = targetRouteIndex;
+        _abortReceivedTime = DateTime.UtcNow;
+        
+        _logger.LogWarning("[联机] 中断重对齐已触发，目标路线={TargetRoute}，异常玩家数={Count}，原因={Reason}",
+            targetRouteIndex, abnormalPlayerUids.Count, reason);
+        
+        // 创建等待 StartRoute 指令的 TCS
+        lock (_startRouteLock)
+        {
+            _startRouteTcs = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+        
+        // 上报就绪状态（使用当前目标路线索引作为参数）
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await _client.ReportRealignReadyAsync(targetRouteIndex);
+                _logger.LogInformation("[联机] 已上报重对齐就绪状态，目标路线={TargetRoute}", targetRouteIndex);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[联机] 上报重对齐就绪状态失败");
+            }
+        });
+    }
+    
+    /// <summary>
+    /// 处理开始路线指令
+    /// </summary>
+    private void HandleStartRoute(int targetRouteIndex)
+    {
+        _logger.LogInformation("[联机] 开始路线指令处理，目标路线={TargetRoute}", targetRouteIndex);
+        
+        lock (_startRouteLock)
+        {
+            _startRouteTcs?.TrySetResult(targetRouteIndex);
+        }
+    }
+    
+    /// <summary>
+    /// 处理强制线路同步指令（multiplayer-route-enforcement spec）
+    /// </summary>
+    private void HandleRouteEnforceSync(int targetRouteIndex, string reason, List<string> deviationInfo)
+    {
+        // 获取当前路线索引（从心跳进度中获取）
+        var myRouteIndex = GetCurrentRouteIndex();
+        
+        _logger.LogInformation("[联机] 强制线路同步处理: 当前路线={CurrentRoute}, 目标路线={TargetRoute}, 原因={Reason}",
+            myRouteIndex, targetRouteIndex, reason);
+        
+        // 只有当前路线超前于目标路线时才需要跳转
+        if (myRouteIndex > targetRouteIndex)
+        {
+            _routeEnforceSyncRequested = true;
+            _enforceTargetRouteIndex = targetRouteIndex;
+            _logger.LogWarning("[联机] 当前线路{CurrentRoute}超前于目标线路{TargetRoute}，已设置强制跳转标志",
+                myRouteIndex, targetRouteIndex);
+        }
+        else
+        {
+            _logger.LogInformation("[联机] 当前线路{CurrentRoute}不超前于目标线路{TargetRoute}，无需跳转",
+                myRouteIndex, targetRouteIndex);
+        }
+    }
+    
+    /// <summary>
+    /// 获取当前路线索引（从客户端进度缓存中获取）
+    /// </summary>
+    private int GetCurrentRouteIndex()
+    {
+        // 尝试从客户端获取当前路线索引
+        var uid = TaskContext.Instance().Config.AutoHoeingConfig.PlayerUid;
+        var peerIndex = _client.GetPeerRouteIndex(uid);
+        return peerIndex ?? -1;
+    }
+    
+    /// <summary>是否需要强制跳转到目标线路</summary>
+    public bool IsRouteEnforceSyncRequested => _routeEnforceSyncRequested;
+    
+    /// <summary>获取强制跳转目标线路索引</summary>
+    public int GetEnforceTargetRouteIndex() => _enforceTargetRouteIndex;
+    
+    /// <summary>清除强制跳转状态</summary>
+    public void ClearRouteEnforceSync()
+    {
+        _routeEnforceSyncRequested = false;
+        _enforceTargetRouteIndex = -1;
+        _logger.LogInformation("[联机] 强制线路同步状态已清除");
+    }
+    
+    /// <summary>
+    /// 等待开始路线指令（带超时）
+    /// </summary>
+    /// <param name="timeoutSeconds">超时秒数</param>
+    /// <param name="ct">取消令牌</param>
+    /// <returns>目标路线索引，超时返回 -1</returns>
+    public async Task<int> WaitForStartRouteAsync(int timeoutSeconds, CancellationToken ct)
+    {
+        TaskCompletionSource<int>? tcs;
+        lock (_startRouteLock)
+        {
+            tcs = _startRouteTcs;
+            if (tcs == null)
+            {
+                // 没有正在等待的重对齐流程
+                return -1;
+            }
+        }
+        
+        using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
+        
+        try
+        {
+            using var reg = linkedCts.Token.Register(() => tcs.TrySetCanceled());
+            var result = await tcs.Task;
+            return result;
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogWarning("[联机] 等待开始路线指令超时（{Timeout}s）", timeoutSeconds);
+            return -1;
+        }
+        finally
+        {
+            lock (_startRouteLock)
+            {
+                _startRouteTcs = null;
+            }
+        }
+    }
+
     /// <summary>多世界轮次切换时重置状态。</summary>
     public void ResetForNewRound()
     {
@@ -1475,7 +1719,24 @@ public class MultiplayerCoordinator : IAsyncDisposable
         _isDegraded = false;
         _lastServerContactTime = DateTime.UtcNow;
         
-        _logger.LogInformation("[联机] ResetForNewRound: 状态已重置（包含路线跳过对齐、等待点上报、异常超时和统一等待点协调状态）");
+        // 中断重对齐状态重置（multiplayer-abort-and-realign spec）
+        _abortRequested = false;
+        _abortTargetRouteIndex = -1;
+        lock (_startRouteLock)
+        {
+            _startRouteTcs?.TrySetCanceled();
+            _startRouteTcs = null;
+        }
+        
+        // 强制线路同步状态重置（multiplayer-route-enforcement spec）
+        _routeEnforceSyncRequested = false;
+        _enforceTargetRouteIndex = -1;
+        
+        // 线路同步协调器和异常状态管理器重置（需求 10, 11）
+        _routeSyncCoordinator?.Reset();
+        _abnormalStatusManager?.Reset();
+        
+        _logger.LogInformation("[联机] ResetForNewRound: 状态已重置（包含路线跳过对齐、等待点上报、异常超时、统一等待点协调、线路同步协调器和异常状态管理器状态）");
     }
 
     public async ValueTask DisposeAsync()
@@ -1489,6 +1750,13 @@ public class MultiplayerCoordinator : IAsyncDisposable
         _client.UnifiedWaitPointReceived -= _onUnifiedWaitPointReceivedHandler;
         _client.AbnormalPlayerRecoveredReceived -= _onAbnormalPlayerRecoveredHandler;
         _client.AllPlayersArrivedReceived -= _onAllPlayersArrivedHandler;
+        
+        // 清理中断重对齐事件订阅（multiplayer-abort-and-realign spec）
+        _client.AbortAndRealignReceived -= _onAbortAndRealignReceivedHandler;
+        _client.StartRouteReceived -= _onStartRouteReceivedHandler;
+        
+        // 清理强制线路同步事件订阅（multiplayer-route-enforcement spec）
+        _client.RouteEnforceSyncReceived -= _onRouteEnforceSyncReceivedHandler;
         
         // 清理等待点状态管理器资源
         _stateManager?.Dispose();

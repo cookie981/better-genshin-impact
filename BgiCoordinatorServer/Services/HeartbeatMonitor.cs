@@ -1,4 +1,5 @@
 using BgiCoordinatorServer.Hubs;
+using BgiCoordinatorServer.Models;
 using Microsoft.AspNetCore.SignalR;
 
 namespace BgiCoordinatorServer.Services;
@@ -12,6 +13,8 @@ public class HeartbeatMonitor : IHostedService, IDisposable
 
     private static readonly TimeSpan ScanInterval = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan PlayerTimeout = TimeSpan.FromSeconds(30);
+    /// <summary>重对齐超时时间（30秒）</summary>
+    private static readonly TimeSpan RealignTimeout = TimeSpan.FromSeconds(30);
 
     public HeartbeatMonitor(
         RoomManager roomManager,
@@ -42,6 +45,13 @@ public class HeartbeatMonitor : IHostedService, IDisposable
     {
         try
         {
+            // 1. 检查重对齐超时（必须在 RemoveDeadPlayers 之前，因为需要访问完整玩家列表）
+            CheckRealignTimeout();
+            
+            // 2. 检查线路强制同步（multiplayer-route-enforcement spec）
+            CheckRouteEnforcement();
+            
+            // 3. 检查玩家心跳超时
             var affectedRooms = _roomManager.RemoveDeadPlayers(PlayerTimeout);
             foreach (var roomCode in affectedRooms)
             {
@@ -88,6 +98,119 @@ public class HeartbeatMonitor : IHostedService, IDisposable
         catch (Exception ex)
         {
             _logger.LogError(ex, "HeartbeatMonitor 扫描时发生异常");
+        }
+    }
+    
+    /// <summary>
+    /// 检查重对齐超时（每10秒执行一次）
+    /// </summary>
+    private void CheckRealignTimeout()
+    {
+        try
+        {
+            foreach (var (room, roomCode) in _roomManager.GetAllRoomsWithCodes())
+            {
+                var process = room.CurrentRealignProcess;
+                if (process == null || process.IsCompleted)
+                    continue;
+                
+                // 检查是否超时（30秒）
+                if ((DateTime.UtcNow - process.BroadcastTime).TotalSeconds > RealignTimeout.TotalSeconds)
+                {
+                    lock (room)
+                    {
+                        if (process.IsCompleted) return; // 双重检查
+                        
+                        // 标记未响应的玩家为异常
+                        var onlinePlayers = room.Players
+                            .Where(p => (DateTime.UtcNow - p.LastHeartbeat) <= TimeSpan.FromSeconds(30))
+                            .ToList();
+                        
+                        var notReadyPlayers = onlinePlayers
+                            .Where(p => !process.ReadyPlayers.Contains(p.PlayerUid))
+                            .ToList();
+                        
+                        foreach (var player in notReadyPlayers)
+                        {
+                            player.IsAbnormal = true; // 标记为异常
+                            _logger.LogWarning("[CheckRealignTimeout] 玩家{Player}未响应重对齐，标记为异常", player.PlayerName);
+                        }
+                        
+                        // 广播 StartRoute
+                        process.IsCompleted = true;
+                        _logger.LogWarning("[CheckRealignTimeout] 房间{RoomCode}重对齐超时，广播 StartRoute，目标路线={Target}",
+                            roomCode, process.TargetRouteIndex);
+                        
+                        _ = _hubContext.Clients.Group(roomCode)
+                            .SendAsync("StartRoute", process.TargetRouteIndex);
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "CheckRealignTimeout 扫描时发生异常");
+        }
+    }
+    
+    /// <summary>
+    /// 检查线路强制同步（每10秒执行一次）
+    /// 检测所有玩家的线路偏差，超过阈值时强制同步（multiplayer-route-enforcement spec）
+    /// </summary>
+    private void CheckRouteEnforcement()
+    {
+        try
+        {
+            foreach (var (room, roomCode) in _roomManager.GetAllRoomsWithCodes())
+            {
+                // 跳过未启用强制同步的房间
+                if (!room.RouteEnforcementEnabled)
+                    continue;
+                
+                // 跳过有重对齐流程进行中的房间（避免冲突）
+                if (room.CurrentRealignProcess != null && !room.CurrentRealignProcess.IsCompleted)
+                    continue;
+                
+                List<PlayerInfo> activePlayers;
+                lock (room)
+                {
+                    // 获取活跃玩家（排除异常状态和心跳超时）
+                    activePlayers = room.Players
+                        .Where(p => !p.IsAbnormal)
+                        .Where(p => (DateTime.UtcNow - p.LastHeartbeat) <= TimeSpan.FromSeconds(30))
+                        .Where(p => p.CurrentRouteIndex >= 0)
+                        .ToList();
+                }
+                
+                if (activePlayers.Count < 2)
+                    continue; // 少于2人不需要检测
+                
+                var routeIndices = activePlayers.Select(p => p.CurrentRouteIndex).ToList();
+                var maxRoute = routeIndices.Max();
+                var minRoute = routeIndices.Min();
+                var deviation = maxRoute - minRoute;
+                
+                if (deviation > room.RouteEnforcementThreshold)
+                {
+                    // 线路偏差超过阈值，广播强制同步
+                    _logger.LogWarning("[RouteEnforcement] 房间{RoomCode}检测到线路偏差: min={Min}, max={Max}, deviation={Dev}, threshold={Threshold}",
+                        roomCode, minRoute, maxRoute, deviation, room.RouteEnforcementThreshold);
+                    
+                    var deviationInfo = activePlayers
+                        .Select(p => $"{p.PlayerName}:{p.CurrentRouteIndex}")
+                        .ToList();
+                    
+                    _logger.LogInformation("[RouteEnforcement] 房间{RoomCode}广播 RouteEnforceSync，目标线路={Target}",
+                        roomCode, minRoute);
+                    
+                    _ = _hubContext.Clients.Group(roomCode)
+                        .SendAsync("RouteEnforceSync", minRoute, "线路偏差检测", deviationInfo);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "CheckRouteEnforcement 扫描时发生异常");
         }
     }
 

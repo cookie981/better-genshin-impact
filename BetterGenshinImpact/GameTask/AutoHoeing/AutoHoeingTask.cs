@@ -495,6 +495,10 @@ public class AutoHoeingTask : ISoloTask
             var barrier = new SyncBarrier(client, _config.SyncTimeoutSeconds);
             var resolver = new SyncPointResolver();
             _multiplayerCoordinator = new MultiplayerCoordinator(client, barrier, resolver, _config.MinPlayersToSync, _config.SyncTimeoutSeconds);
+            
+            // 初始化线路同步协调器和异常状态管理器（需求 10, 11）
+            _multiplayerCoordinator.InitializeCoordinators(_config);
+            
             _logger.LogInformation("[联机] MultiplayerCoordinator 初始化完成，超时={Timeout}s，最低人数={Min}", _config.SyncTimeoutSeconds, _config.MinPlayersToSync);
 
             // 联机模式：设置战斗超时覆盖值（不修改原始配置，通过 PathingConditionConfig 传递给 AutoFightHandler）
@@ -1539,6 +1543,10 @@ public class AutoHoeingTask : ISoloTask
             var resolver = new SyncPointResolver();
             _multiplayerCoordinator = new MultiplayerCoordinator(client, barrier, resolver,
                 _config.MinPlayersToSync, _config.SyncTimeoutSeconds);
+            
+            // 初始化线路同步协调器和异常状态管理器（需求 10, 11）
+            _multiplayerCoordinator.InitializeCoordinators(_config);
+            
             _multiplayerCoordinator.OnDegraded += reason =>
                 _logger.LogWarning("[联机] 已降级为单机模式，原因：{Reason}", reason);
             // 连续超时退出处理（需求 5）— 多世界模式每轮重建时也需要注册
@@ -2072,11 +2080,113 @@ public class AutoHoeingTask : ISoloTask
 
         foreach (var route in groupRoutes.Skip(startIndex))
         {
+            // === 中断重对齐检查（multiplayer-abort-and-realign spec）===
+            if (_multiplayerCoordinator?.IsAbortRequested == true)
+            {
+                var targetRoute = _multiplayerCoordinator.GetAbortTargetRouteIndex();
+                _logger.LogWarning("[联机] 收到中断指令，跳转到目标路线 {TargetRoute}", targetRoute);
+                
+                // 等待服务器广播的 StartRoute 指令（带超时）
+                var startRoute = await _multiplayerCoordinator.WaitForStartRouteAsync(30, _ct);
+                if (startRoute >= 0)
+                {
+                    // 清除中断状态
+                    _multiplayerCoordinator.ClearAbortState();
+                    
+                    // 检查目标路线是否有效
+                    if (startRoute >= 0 && startRoute < groupRoutes.Count)
+                    {
+                        // 跳转到目标路线
+                        count = startRoute - startIndex;
+                        if (count < 0) count = 0; // 目标路线已经过了，从头开始
+                        
+                        _logger.LogInformation("[联机] 跳转到路线 {TargetRoute}", startRoute);
+                        continue; // 重新开始循环，跳转到目标路线
+                    }
+                }
+                else
+                {
+                    _logger.LogWarning("[联机] 等待开始路线指令超时，继续执行当前路线");
+                    _multiplayerCoordinator.ClearAbortState();
+                }
+            }
+            
             // 每条路线开始时重置连续超时计数（需求 5），避免跨路线累积误触发
             _multiplayerCoordinator?.ResetSyncTimeoutCount();
 
+            // 当前路线索引
+            int currentRouteIndex = startIndex + count;
+            
+            // === 强制线路同步检查（multiplayer-route-enforcement spec）===
+            if (_multiplayerCoordinator?.IsRouteEnforceSyncRequested == true)
+            {
+                var enforceTarget = _multiplayerCoordinator.GetEnforceTargetRouteIndex();
+                _logger.LogWarning("[联机] 收到强制线路同步指令，需要跳转到目标线路 {TargetRoute}，当前线路 {CurrentRoute}",
+                    enforceTarget, currentRouteIndex);
+                
+                // 清除强制同步状态
+                _multiplayerCoordinator.ClearRouteEnforceSync();
+                
+                // 检查目标线路是否有效且在当前线路之前
+                if (enforceTarget >= 0 && enforceTarget < currentRouteIndex && enforceTarget < groupRoutes.Count)
+                {
+                    // 计算跳转后的 count 值
+                    count = enforceTarget - startIndex;
+                    if (count < 0) count = 0; // 目标线路已经过了，从头开始
+                    
+                    _logger.LogInformation("[联机] 强制线路同步：跳转到线路 {TargetRoute}", enforceTarget);
+                    continue; // 重新开始循环，跳转到目标线路
+                }
+                else
+                {
+                    _logger.LogInformation("[联机] 目标线路 {TargetRoute} 不在当前线路 {CurrentRoute} 之前，无需跳转",
+                        enforceTarget, currentRouteIndex);
+                }
+            }
+            
+            // === 线路同步检查点（需求 10）：路线开始时检查同步 ===
+            if (_multiplayerCoordinator?.RouteSyncCoordinator != null && _config.MultiplayerEnabled)
+            {
+                try
+                {
+                    var syncDecision = await _multiplayerCoordinator.RouteSyncCoordinator.CheckSyncAtRouteStart(currentRouteIndex, _ct);
+                    
+                    if (syncDecision.Action == RouteSyncAction.SkipAndCatchUp)
+                    {
+                        // 正常玩家落后，需要追赶异常玩家
+                        _logger.LogInformation("[联机] 线路同步检查：当前路线{Current}落后于最大路线{Target}，需要跳过{Skip}条路线追赶",
+                            currentRouteIndex, syncDecision.TargetRouteIndex, syncDecision.SkipRouteCount);
+                        
+                        // 刷新进度缓存
+                        _multiplayerCoordinator.RouteSyncCoordinator.RefreshCache();
+                        
+                        // 广播跳过进度（让异常玩家知道我们在追赶）
+                        await _coordinatorClientRef!.SendMemberProgressAsync(syncDecision.TargetRouteIndex);
+                        
+                        // 设置跳过下一个同步点标志（因为我们将要执行路线跳过）
+                        _multiplayerCoordinator.SetSkipNextSyncPoint();
+                        
+                        // 上报 Rejoining 状态，触发路线跳过流程
+                        _logger.LogInformation("[联机] 上报 Rejoining 状态，触发路线跳过流程追赶");
+                        await _coordinatorClientRef.ReportMemberStatusAsync(MemberStatus.Rejoining);
+                        
+                        // 继续执行当前路线，在路线执行时会检测到 Rejoining 状态并触发跳过
+                    }
+                    else if (syncDecision.Action == RouteSyncAction.ProceedAndWait)
+                    {
+                        // 当前玩家领先（异常玩家），继续执行并在同步点等待
+                        _logger.LogInformation("[联机] 线路同步检查：当前玩家领先，继续执行并在同步点等待");
+                    }
+                    // RouteSyncAction.Proceed: 正常执行
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "[联机] 线路同步检查异常，继续执行当前路线");
+                }
+            }
+
             // 上报当前路线进度信息（需求 6），下次心跳时自动携带
-            _coordinatorClientRef?.UpdateRouteProgress(startIndex + count, DateTime.UtcNow, route.AdjustedTime);
+            _coordinatorClientRef?.UpdateRouteProgress(currentRouteIndex, DateTime.UtcNow, route.AdjustedTime);
 
             _logger.LogInformation("[DEBUG] 进入路线循环，count={Count}，route={Name}", count + 1, route.FileName);
             _ct.ThrowIfCancellationRequested();
@@ -2166,11 +2276,12 @@ public class AutoHoeingTask : ISoloTask
                         // 智能跳过决策与进度广播
                         if (_multiplayerCoordinator != null)
                         {
-                            // 获取当前路线索引
-                            int currentRouteIndex = startIndex + count - 1; // count 已递增，需要减1
+                            // 获取当前路线索引（使用外部作用域的 currentRouteIndex）
+                            // count 已递增，需要减1
+                            int routeIdx = startIndex + count - 1;
                             
                             // 智能跳过决策
-                            bool shouldSkip = ShouldSkipRoute(currentRouteIndex);
+                            bool shouldSkip = ShouldSkipRoute(routeIdx);
                             
                             if (!shouldSkip)
                             {
@@ -2286,6 +2397,20 @@ public class AutoHoeingTask : ISoloTask
                         {
                             try { await _coordinatorClientRef.ReportMemberStatusAsync(MemberStatus.Normal); } catch { }
                         }
+                        
+                        // === 线路同步检查点（需求 10）：路线完成时上报进度 ===
+                        if (_multiplayerCoordinator?.RouteSyncCoordinator != null && _config.MultiplayerEnabled)
+                        {
+                            try
+                            {
+                                await _multiplayerCoordinator.RouteSyncCoordinator.ReportRouteCompletion(currentRouteIndex);
+                            }
+                            catch (Exception ex)
+                            {
+                                _logger.LogWarning(ex, "[联机] 路线完成进度上报异常");
+                            }
+                        }
+                        
                         _cdManager.RecordCompletion(route, duration);
                         _cdManager.UpdateAllRecords(routes);
                     }

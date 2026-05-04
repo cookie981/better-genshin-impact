@@ -159,6 +159,7 @@ public class WaitPointStateManager : IDisposable
     public void RemoveState(string playerUid)
     {
         _states.TryRemove(playerUid, out _);
+        _abnormalPlayers.TryRemove(playerUid, out _);
         _logger.LogDebug("移除玩家等待点状态: {PlayerUid}", playerUid);
     }
 

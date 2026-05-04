@@ -279,6 +279,16 @@ public class PathExecutor
 
         foreach (var waypoints in waypointsList) // 按传送点分割的路径
         {
+            // === 实时中断检查（multiplayer-abort-and-realign spec）===
+            // 在每个路线段开始时检查是否收到中断指令
+            if (MultiplayerCoordinator?.IsAbortRequested == true)
+            {
+                Logger.LogWarning("[联机] 路线段循环中检测到中断指令，停止当前路线执行");
+                SkipRouteRequested = true;
+                SkipRouteReason = "收到中断重对齐指令";
+                break;
+            }
+            
             // 联机模式成员：上一个段设置了 SkipToNextSegment，重置标志位，继续到本段（自动传送）
             if (SkipToNextSegment)
             {
@@ -316,6 +326,16 @@ public class PathExecutor
                     var last2Waypoints = false;
                     foreach (var waypoint in waypoints) // 一条路径
                     {
+                        // === 实时中断检查（multiplayer-abort-and-realign spec）===
+                        // 在每个路径点迭代时检查是否收到中断指令
+                        if (MultiplayerCoordinator?.IsAbortRequested == true)
+                        {
+                            Logger.LogWarning("[联机] 路径点循环中检测到中断指令，停止当前路线执行");
+                            SkipRouteRequested = true;
+                            SkipRouteReason = "收到中断重对齐指令";
+                            break;
+                        }
+                        
                         CurWaypoint = (waypoints.FindIndex(wps => wps == waypoint), waypoint);
                         
                         //计算下一个节点到当前节点的距离

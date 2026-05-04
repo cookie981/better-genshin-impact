@@ -26,6 +26,11 @@ public class AnomalyDetector
     private RecognitionObject? _cookingRo;
 
     public bool ShouldSwitchFurina { get; set; }
+    
+    /// <summary>
+    /// 检测到复苏时的回调（用于联机模式上报异常状态）
+    /// </summary>
+    public Func<Task>? OnRevivalDetected { get; set; }
 
     public void LoadTemplates(string assetsDir)
     {
@@ -106,6 +111,12 @@ public class AnomalyDetector
                             Logger.LogInformation("识别到复苏按钮（单机模板匹配），点击");
                             result.Click();
                             await Task.Delay(500, ct);
+                            
+                            // 联机模式：触发复苏回调上报异常状态
+                            if (OnRevivalDetected != null)
+                            {
+                                try { await OnRevivalDetected(); } catch { }
+                            }
                             continue;
                         }
                     }
@@ -115,6 +126,12 @@ public class AnomalyDetector
                         Logger.LogInformation("识别到联机已倒下界面（色块检测），点击复苏按钮");
                         region.ClickTo(960, 1020);
                         await Task.Delay(500, ct);
+                        
+                        // 联机模式：触发复苏回调上报异常状态
+                        if (OnRevivalDetected != null)
+                        {
+                            try { await OnRevivalDetected(); } catch { }
+                        }
                         continue;
                     }
                 }

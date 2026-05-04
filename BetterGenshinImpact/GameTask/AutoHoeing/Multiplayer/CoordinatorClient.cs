@@ -71,6 +71,16 @@ public class CoordinatorClient : IAsyncDisposable
     /// <summary>所有玩家已到达等待点：参数为(syncPointId)</summary>
     public event Action<string>? AllPlayersArrivedReceived;
 
+    // === 异常中断重对齐机制（multiplayer-abort-and-realign spec）===
+    /// <summary>收到服务端中断重对齐指令：参数为(targetRouteIndex, abnormalPlayerUids, reason)</summary>
+    public event Action<int, List<string>, string>? AbortAndRealignReceived;
+    /// <summary>收到服务端开始路线指令：参数为(targetRouteIndex)</summary>
+    public event Action<int>? StartRouteReceived;
+    
+    // === 强制线路同步机制（multiplayer-route-enforcement spec）===
+    /// <summary>收到强制线路同步指令：参数为(targetRouteIndex, reason, deviationInfo)</summary>
+    public event Action<int, string, List<string>>? RouteEnforceSyncReceived;
+
     public bool IsConnected =>
         _connection?.State == HubConnectionState.Connected;
 
@@ -300,6 +310,34 @@ public class CoordinatorClient : IAsyncDisposable
                 {
                     _logger.LogInformation("[联机] 收到所有玩家已到达广播: {SyncPointId}", syncPointId);
                     AllPlayersArrivedReceived?.Invoke(syncPointId);
+                });
+
+            // === 异常中断重对齐机制（multiplayer-abort-and-realign spec）===
+            // 服务端广播中断指令，通知所有玩家停止当前任务并重新对齐
+            _connection.On<int, List<string>, string>("AbortAndRealign",
+                (targetRouteIndex, abnormalPlayerUids, reason) =>
+                {
+                    _logger.LogInformation("[联机] 收到中断重对齐指令: 目标路线={TargetRoute}, 异常玩家=[{AbnormalPlayers}], 原因={Reason}",
+                        targetRouteIndex, string.Join(", ", abnormalPlayerUids.Select(GetPlayerDisplayName)), reason);
+                    AbortAndRealignReceived?.Invoke(targetRouteIndex, abnormalPlayerUids, reason);
+                });
+
+            // 服务端广播开始路线指令，通知所有玩家开始执行目标路线
+            _connection.On<int>("StartRoute",
+                targetRouteIndex =>
+                {
+                    _logger.LogInformation("[联机] 收到开始路线指令: 目标路线={TargetRoute}", targetRouteIndex);
+                    StartRouteReceived?.Invoke(targetRouteIndex);
+                });
+            
+            // === 强制线路同步机制（multiplayer-route-enforcement spec）===
+            // 服务端广播强制线路同步指令，通知超前玩家跳转到落后玩家的线路
+            _connection.On<int, string, List<string>>("RouteEnforceSync",
+                (targetRouteIndex, reason, deviationInfo) =>
+                {
+                    _logger.LogInformation("[联机] 收到强制线路同步指令: 目标路线={TargetRoute}, 原因={Reason}, 偏差信息=[{DevInfo}]",
+                        targetRouteIndex, reason, string.Join(", ", deviationInfo));
+                    RouteEnforceSyncReceived?.Invoke(targetRouteIndex, reason, deviationInfo);
                 });
 
             _connection.Closed += OnConnectionClosed;
@@ -835,6 +873,29 @@ public class CoordinatorClient : IAsyncDisposable
     public int? GetPeerRouteIndex(string peerUid)
     {
         return _memberProgressCache.TryGetValue(peerUid, out var idx) ? idx : (int?)null;
+    }
+
+    /// <summary>
+    /// 上报重对齐就绪状态（multiplayer-abort-and-realign spec）
+    /// 客户端收到 AbortAndRealign 指令后，停止当前任务并上报就绪
+    /// </summary>
+    public async Task ReportRealignReadyAsync(int currentRouteIndex)
+    {
+        if (_connection == null || !IsConnected)
+        {
+            _logger.LogWarning("[联机] 无法上报重对齐就绪：未连接");
+            return;
+        }
+
+        try
+        {
+            await _connection.InvokeAsync("RealignReady", currentRouteIndex);
+            _logger.LogInformation("[联机] 已上报重对齐就绪，当前路线={CurrentRoute}", currentRouteIndex);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[联机] 上报重对齐就绪失败");
+        }
     }
 
     /// <summary>

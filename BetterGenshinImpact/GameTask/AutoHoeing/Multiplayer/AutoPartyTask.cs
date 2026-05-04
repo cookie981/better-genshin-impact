@@ -163,7 +163,7 @@ public class AutoPartyTask
         try
         {
             var deadline = DateTime.Now.AddSeconds(timeoutSeconds);
-            bool skipMainUiCheck = false; // 重新打开 F2 后跳过一次顶部主界面检测
+            bool isInF2Screen = true; // 追踪当前是否在 F2 界面
             while (DateTime.Now < deadline)
             {
                 ct.ThrowIfCancellationRequested();
@@ -181,118 +181,106 @@ public class AutoPartyTask
                     return currentCount > 0 ? currentCount : 1;
                 }
 
-                // 检测 ESC（用户手动关闭了 F2，视为跳过）或加载后回到主界面
-                // skipMainUiCheck 为 true 时跳过，避免重新打开 F2 后误判
-                if (!skipMainUiCheck)
+                // 核心修改：始终检测申请弹窗（无论在主界面还是 F2 界面）
+                // 弹窗可能在主界面出现（第一个成员加入后触发加载，回到主界面时新申请弹窗出现）
+                using (var checkRa = CaptureToRectArea())
                 {
-                    using (var checkRa = CaptureToRectArea())
+                    var hasPopup = checkRa.Find(ConfirmBtnRo).IsExist();
+                    if (hasPopup)
                     {
-                        if (Bv.IsInMainUi(checkRa))
+                        var shouldAccept = true;
+                        if (whitelist != null && whitelist.Length > 0)
                         {
-                            var currentCount = client.CurrentRoomPlayerCount;
-                            // 人数已满，直接开始
-                            if (currentCount >= expectedCount)
+                            var applicantName = OcrApplicantName();
+                            if (!string.IsNullOrEmpty(applicantName))
                             {
-                                _logger.LogInformation("[自动组队-房主] 检测到主界面且人数已满 {N}，开始锄地", currentCount);
-                                return currentCount;
+                                shouldAccept = IsInWhitelist(applicantName, whitelist);
+                                _logger.LogInformation("[自动组队-房主] OCR 识别申请者: {Name}，白名单匹配: {Match}",
+                                    applicantName, shouldAccept);
                             }
-                            // 人数未满，可能是加载完成回到主界面，重新打开 F2 继续等待
-                            _logger.LogInformation("[自动组队-房主] 检测到主界面但人数未满（{Count}/{Expected}），重新打开 F2 继续等待", currentCount, expectedCount);
-                            if (!await OpenCoOpScreen(ct, whitelist))
+                            else
                             {
-                                _logger.LogWarning("[自动组队-房主] 重新打开 F2 失败，等待加载完成后重试");
-                                await WaitForMainUi(ct, 15);
+                                _logger.LogWarning("[自动组队-房主] OCR 识别失败，跳过本次申请");
+                                shouldAccept = false;
                             }
-                            skipMainUiCheck = true;
+                        }
+
+                        if (shouldAccept)
+                        {
+                            ClickConfirmButton();
+                            await Delay(300, ct);
+                            ClickConfirmButton();
+                            await Delay(700, ct);
+                            _logger.LogDebug("[自动组队-房主] 已点击确认，等待加载...");
+                            
+                            // 处理完弹窗后继续检测，可能还有更多申请
+                            continue;
+                        }
+                        else
+                        {
+                            ClickRejectButton();
+                            await Delay(500, ct);
                             continue;
                         }
                     }
                 }
-                skipMainUiCheck = false;
 
-                // 先按 Y 触发申请弹窗
-                Simulation.SendInput.Keyboard.KeyPress(User32.VK.VK_Y);
-                await Delay(500, ct);
-
-                // 检测是否有确认弹窗出现（模板匹配接受按钮）
-                bool hasPopup;
+                // 检测当前是否在主界面
                 using (var checkRa = CaptureToRectArea())
                 {
-                    hasPopup = checkRa.Find(ConfirmBtnRo).IsExist();
-                }
-
-                if (!hasPopup)
-                {
-                    await Delay(1500, ct);
-                }
-                else
-                {
-                    var shouldAccept = true;
-                    if (whitelist != null && whitelist.Length > 0)
+                    if (Bv.IsInMainUi(checkRa))
                     {
-                        var applicantName = OcrApplicantName();
-                        if (!string.IsNullOrEmpty(applicantName))
+                        var currentCount = client.CurrentRoomPlayerCount;
+                        // 人数已满，直接开始
+                        if (currentCount >= expectedCount)
                         {
-                            shouldAccept = IsInWhitelist(applicantName, whitelist);
-                            _logger.LogInformation("[自动组队-房主] OCR 识别申请者: {Name}，白名单匹配: {Match}",
-                                applicantName, shouldAccept);
+                            _logger.LogInformation("[自动组队-房主] 检测到主界面且人数已满 {N}，开始锄地", currentCount);
+                            return currentCount;
+                        }
+                        
+                        // 人数未满，如果之前在 F2 界面，说明有人加入触发了加载
+                        if (isInF2Screen)
+                        {
+                            _logger.LogInformation("[自动组队-房主] 检测到主界面（玩家加入触发加载），人数: {Count}/{Expected}", currentCount, expectedCount);
+                            isInF2Screen = false;
+                            
+                            // 等待加载稳定后重新打开 F2
+                            await Delay(2000, ct);
+                            await WaitForMainUi(ct, 10);
+                            
+                            if (!await OpenCoOpScreen(ct, whitelist))
+                            {
+                                _logger.LogWarning("[自动组队-房主] 重新打开 F2 失败，重试");
+                                await Delay(2000, ct);
+                                continue;
+                            }
+                            isInF2Screen = true;
                         }
                         else
                         {
-                            _logger.LogWarning("[自动组队-房主] OCR 识别失败，跳过本次申请");
-                            shouldAccept = false;
+                            // 一直在主界面，说明 F2 没打开成功，尝试重新打开
+                            _logger.LogDebug("[自动组队-房主] 在主界面但 F2 未打开，尝试打开 F2");
+                            if (!await OpenCoOpScreen(ct, whitelist))
+                            {
+                                await Delay(1000, ct);
+                            }
+                            else
+                            {
+                                isInF2Screen = true;
+                            }
                         }
-                    }
-
-                    if (shouldAccept)
-                    {
-                        ClickConfirmButton();
-                        await Delay(300, ct);
-                        ClickConfirmButton();
-                        await Delay(700, ct);
-                        _logger.LogDebug("[自动组队-房主] 已点击确认，等待加载...");
-                    }
-                    else
-                    {
-                        ClickRejectButton();
-                        await Delay(500, ct);
-                    }
-                }
-
-                // 检测是否被踢回主界面（玩家加入触发加载）
-                using var ra = CaptureToRectArea();
-                var isMainUiAfterConfirm = Bv.IsInMainUi(ra);
-                _logger.LogDebug("[自动组队-房主] 确认后检测主界面: {IsMain}，当前房间人数: {Count}", isMainUiAfterConfirm, client.CurrentRoomPlayerCount);
-                if (isMainUiAfterConfirm)
-                {
-                    _logger.LogInformation("[自动组队-房主] 检测到主界面（玩家加入触发加载），等待加载完成后重新打开 F2");
-                    await Delay(3000, ct);
-                    await WaitForMainUi(ct, 15);
-                    _logger.LogDebug("[自动组队-房主] 加载完成，当前房间人数: {Count}", client.CurrentRoomPlayerCount);
-
-                    // 检查人数是否已达到期望值
-                    if (client.CurrentRoomPlayerCount >= expectedCount)
-                    {
-                        _logger.LogInformation("[自动组队-房主] 加载后人数已达到期望值 {N}，开始锄地", client.CurrentRoomPlayerCount);
-                        return client.CurrentRoomPlayerCount;
-                    }
-
-                    if (!await OpenCoOpScreen(ct, whitelist))
-                    {
-                        _logger.LogWarning("[自动组队-房主] 重新打开 F2 失败，重试");
-                        await Delay(2000, ct);
                         continue;
                     }
-                    // 重新打开 F2 成功，跳回循环顶部，并跳过一次主界面检测（F2 刚打开，主界面已不可见）
-                    skipMainUiCheck = true;
-                    continue;
                 }
-                else
+                
+                // 在 F2 界面，按 Y 触发申请弹窗（如果有待处理的申请）
+                if (isInF2Screen)
                 {
-                    _logger.LogDebug("[自动组队-房主] 未检测到主界面，继续等待");
+                    Simulation.SendInput.Keyboard.KeyPress(User32.VK.VK_Y);
+                    await Delay(500, ct);
                 }
 
-                await Delay(1500, ct);
+                await Delay(500, ct);
             }
 
             // 超时：返回 0，由调用方根据 PartyTimeoutAction 决定
@@ -535,53 +523,84 @@ public class AutoPartyTask
     /// <summary>
     /// 退出多人游戏，回到自己的世界。
     /// 操作：确保在主界面 → 打开 F2 → 点击"离开队伍"坐标(1600,1020) → 等待加载回到自己世界
+    /// 持续重试直到成功回到自己世界或超时
     /// </summary>
     public async Task<bool> LeaveWorldAsync(CancellationToken ct)
     {
         _logger.LogInformation("[自动组队] 开始退出多人游戏，回到自己的世界");
 
-        // 确保在主界面
-        try { await new BetterGenshinImpact.GameTask.Common.Job.ReturnMainUiTask().Start(ct); }
-        catch { /* 忽略 */ }
-        await Delay(500, ct);
-
-        if (!await WaitForMainUi(ct, 10))
+        // 最多尝试 5 次
+        for (int attempt = 1; attempt <= 5; attempt++)
         {
-            _logger.LogError("[自动组队] 退出前回到主界面失败");
-            return false;
-        }
+            ct.ThrowIfCancellationRequested();
+            _logger.LogInformation("[自动组队] 退出尝试 {Attempt}/5", attempt);
 
-        // 打开 F2
-        if (!await OpenCoOpScreen(ct))
-        {
-            _logger.LogError("[自动组队] 打开 F2 失败，无法退出多人游戏");
-            return false;
-        }
+            // 确保在主界面
+            try { await new BetterGenshinImpact.GameTask.Common.Job.ReturnMainUiTask().Start(ct); }
+            catch { /* 忽略 */ }
+            await Delay(500, ct);
 
-        // 点击"离开队伍/回到自己世界"按钮（1080P 坐标 1600,1020）
-        _logger.LogInformation("[自动组队] 点击离开队伍按钮 (1600,1020)");
-        GameCaptureRegion.GameRegion1080PPosClick(1600, 1020);
-        await Delay(1000, ct);
-
-        // 可能有确认弹窗，点击确认
-        using (var ra = CaptureToRectArea())
-        {
-            if (ra.Find(ConfirmBtnRo).IsExist())
+            if (!await WaitForMainUi(ct, 10))
             {
-                ClickConfirmButton();
-                await Delay(500, ct);
+                _logger.LogWarning("[自动组队] 退出前回到主界面失败，重试");
+                continue;
+            }
+
+            // 打开 F2
+            if (!await OpenCoOpScreen(ct))
+            {
+                _logger.LogWarning("[自动组队] 打开 F2 失败，重试");
+                await Delay(1000, ct);
+                continue;
+            }
+
+            // 点击"离开队伍/回到自己世界"按钮（1080P 坐标 1600,1020）
+            _logger.LogInformation("[自动组队] 点击离开队伍按钮 (1600,1020)");
+            GameCaptureRegion.GameRegion1080PPosClick(1600, 1020);
+            await Delay(1000, ct);
+
+            // 可能有确认弹窗，点击确认（房主需要点两次：退回 + 确定）
+            using (var ra = CaptureToRectArea())
+            {
+                if (ra.Find(ConfirmBtnRo).IsExist())
+                {
+                    ClickConfirmButton();
+                    await Delay(300, ct);
+                    ClickConfirmButton();
+                    await Delay(500, ct);
+                }
+            }
+
+            // 等待加载完成（最多 10 秒），见到派蒙即为回到自己世界
+            _logger.LogInformation("[自动组队] 等待回到自己的世界...");
+            if (await WaitForMainUi(ct, 10))
+            {
+                // 额外等待确保界面稳定
+                await Delay(1000, ct);
+                
+                // 再次确认：打开 F2 检查是否是房主（回到自己世界后应该是房主）
+                Simulation.SendInput.SimulateAction(GIActions.OpenCoOpScreen);
+                await Delay(1500, ct);
+                
+                using var checkRa = CaptureToRectArea();
+                if (!Bv.IsInMainUi(checkRa))
+                {
+                    // 成功打开 F2，说明回到了自己的世界（自己是房主）
+                    _logger.LogInformation("[自动组队] 已成功回到自己的世界");
+                    Simulation.SendInput.Keyboard.KeyPress(User32.VK.VK_ESCAPE);
+                    await Delay(500, ct);
+                    return true;
+                }
+                
+                _logger.LogWarning("[自动组队] 检测到仍不是房主，继续重试");
+            }
+            else
+            {
+                _logger.LogWarning("[自动组队] 等待加载超时，重试");
             }
         }
 
-        // 等待加载完成（最多 20 秒），见到派蒙即为回到自己世界
-        _logger.LogInformation("[自动组队] 等待回到自己的世界...");
-        if (await WaitForMainUi(ct, 20))
-        {
-            _logger.LogInformation("[自动组队] 已回到自己的世界");
-            return true;
-        }
-
-        _logger.LogWarning("[自动组队] 等待超时，可能仍在加载中");
+        _logger.LogError("[自动组队] 5 次尝试后仍未回到自己的世界");
         return false;
     }
 

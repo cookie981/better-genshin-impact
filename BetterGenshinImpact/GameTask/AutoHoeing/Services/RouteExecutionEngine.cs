@@ -2,6 +2,7 @@ using BetterGenshinImpact.Core.Config;
 using BetterGenshinImpact.GameTask.AutoFight.Model;
 using BetterGenshinImpact.GameTask.AutoHoeing.Models;
 using BetterGenshinImpact.GameTask.AutoHoeing.Multiplayer;
+using BetterGenshinImpact.GameTask.AutoHoeing.Multiplayer.Models;
 using BetterGenshinImpact.GameTask.AutoPathing;
 using BetterGenshinImpact.GameTask.AutoPathing.Model;
 using Microsoft.Extensions.Logging;
@@ -33,7 +34,31 @@ public class RouteExecutionEngine
     private MultiplayerCoordinator? _coordinator;
     private WorldStateMonitor? _worldStateMonitor;
 
-    public void SetCoordinator(MultiplayerCoordinator? coordinator) => _coordinator = coordinator;
+    public void SetCoordinator(MultiplayerCoordinator? coordinator)
+    {
+        _coordinator = coordinator;
+        
+        // 设置异常检测器的复苏回调
+        if (coordinator != null)
+        {
+            _anomalyDetector.OnRevivalDetected = async () =>
+            {
+                try
+                {
+                    Logger.LogInformation("[联机] 检测到复苏，上报 Reviving 状态");
+                    await coordinator.ReportMemberStatusAsync(MemberStatus.Reviving);
+                }
+                catch (Exception ex)
+                {
+                    Logger.LogWarning(ex, "[联机] 上报 Reviving 状态失败");
+                }
+            };
+        }
+        else
+        {
+            _anomalyDetector.OnRevivalDetected = null;
+        }
+    }
     public void SetWorldStateMonitor(WorldStateMonitor? monitor) => _worldStateMonitor = monitor;
 
     public RouteExecutionEngine(
