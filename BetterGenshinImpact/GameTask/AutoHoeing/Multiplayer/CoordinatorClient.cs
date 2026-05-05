@@ -62,6 +62,14 @@ public class CoordinatorClient : IAsyncDisposable
     public event Action<bool>? HostReadyChanged;
     public event Action<List<string>>? HostRouteListReady;
     public event Action<string, MemberStatus>? OnMemberStatusChanged;
+    
+    // === 统一等待点协调（multiplayer-abnormal-wait-coordination）===
+    /// <summary>收到服务端统一等待点广播：参数为(syncPointId, abnormalPlayerUids, expectedWaitCount, routeId)</summary>
+    public event Action<string, List<string>, int, string>? UnifiedWaitPointReceived;
+    /// <summary>异常玩家恢复广播：参数为(playerUid)</summary>
+    public event Action<string>? AbnormalPlayerRecoveredReceived;
+    /// <summary>所有玩家已到达等待点：参数为(syncPointId)</summary>
+    public event Action<string>? AllPlayersArrivedReceived;
 
     public bool IsConnected =>
         _connection?.State == HubConnectionState.Connected;
@@ -266,6 +274,32 @@ public class CoordinatorClient : IAsyncDisposable
                     WaitPointReported?.Invoke(playerUid, routeId, syncPointId, worldRound, timestamp);
                     _logger.LogInformation("[联机] 收到等待点上报: Player={PlayerName}, Route={RouteId}, SyncPoint={SyncPointId}, Round={WorldRound}", 
                         GetPlayerDisplayName(playerUid), routeId, syncPointId, worldRound);
+                });
+            
+            // === 统一等待点协调（multiplayer-abnormal-wait-coordination）===
+            // 服务端广播统一等待点，通知所有玩家在哪里等待异常玩家
+            _connection.On<string, List<string>, int, string>("UnifiedWaitPoint",
+                (syncPointId, abnormalPlayerUids, expectedWaitCount, routeId) =>
+                {
+                    _logger.LogInformation("[联机] 收到统一等待点广播: SyncPoint={SyncPointId}, 异常玩家=[{AbnormalPlayers}], 预期人数={ExpectedCount}, 路线={RouteId}", 
+                        syncPointId, string.Join(", ", abnormalPlayerUids.Select(GetPlayerDisplayName)), expectedWaitCount, routeId);
+                    UnifiedWaitPointReceived?.Invoke(syncPointId, abnormalPlayerUids, expectedWaitCount, routeId);
+                });
+            
+            // 异常玩家恢复正常广播
+            _connection.On<string>("AbnormalPlayerRecovered",
+                playerUid =>
+                {
+                    _logger.LogInformation("[联机] 收到异常玩家恢复广播: {PlayerName}", GetPlayerDisplayName(playerUid));
+                    AbnormalPlayerRecoveredReceived?.Invoke(playerUid);
+                });
+            
+            // 所有玩家已到达等待点广播（替代原有的 AllArrived，用于服务端主导的等待点协调）
+            _connection.On<string>("AllPlayersArrived",
+                syncPointId =>
+                {
+                    _logger.LogInformation("[联机] 收到所有玩家已到达广播: {SyncPointId}", syncPointId);
+                    AllPlayersArrivedReceived?.Invoke(syncPointId);
                 });
 
             _connection.Closed += OnConnectionClosed;

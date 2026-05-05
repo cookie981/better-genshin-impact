@@ -190,6 +190,28 @@ public class CoordinatorHub : Hub
         return Task.CompletedTask;
     }
 
+    /// <summary>
+    /// 带完整状态的心跳（multiplayer-abnormal-wait-coordination 需求 1.2）
+    /// 玩家定期上报自己的路线索引、异常状态和等待点信息
+    /// </summary>
+    /// <param name="routeIndex">当前路线索引</param>
+    /// <param name="isAbnormal">是否为异常玩家</param>
+    /// <param name="waitPointId">当前等待点ID（异常玩家专用，必须是 _tp_ 格式）</param>
+    public async Task HeartbeatWithState(int routeIndex, bool isAbnormal, string? waitPointId)
+    {
+        var (room, roomCode) = _roomManager.GetRoomByConnectionId(Context.ConnectionId);
+        if (room == null || roomCode == null)
+        {
+            _logger.LogWarning("[HeartbeatWithState] 连接 {ConnId} 未在任何房间中，忽略心跳", Context.ConnectionId);
+            return;
+        }
+
+        _logger.LogDebug("[HeartbeatWithState] 玩家心跳: ConnId={ConnId}, RouteIndex={RouteIndex}, IsAbnormal={IsAbnormal}, WaitPointId={WaitPointId}",
+            Context.ConnectionId, routeIndex, isAbnormal, waitPointId ?? "null");
+
+        _roomManager.UpdateHeartbeatWithState(Context.ConnectionId, routeIndex, isAbnormal, waitPointId);
+    }
+
     /// <summary>查询指定成员的路线进度（需求 6）</summary>
     public Task<MemberProgress?> GetMemberProgress(string playerUid)
     {
@@ -474,9 +496,13 @@ public class CoordinatorHub : Hub
     }
 
     /// <summary>
-    /// 等待点上报（skip-route-wait-point-report 修复）
-    /// 玩家跳过线路并在同步点等待时调用，广播给房间内所有玩家
+    /// 等待点上报（multiplayer-abnormal-wait-coordination 重构）
+    /// 玩家跳过线路并在同步点等待时调用
+    /// 服务端验证等待点格式、计算统一等待点、广播给所有正常玩家
     /// </summary>
+    /// <param name="routeId">路线ID</param>
+    /// <param name="syncPointId">同步点ID</param>
+    /// <param name="worldRound">世界轮次</param>
     public async Task WaitPointReport(string routeId, string syncPointId, int worldRound)
     {
         var (room, roomCode) = _roomManager.GetRoomByConnectionId(Context.ConnectionId);
@@ -504,83 +530,74 @@ public class CoordinatorHub : Hub
                     playerUid, worldRound, room.CurrentWorldRound);
                 return; // 忽略跨轮上报
             }
-            
-            // 存储等待点（用于记录，不用于协调）
-            room.WaitPoints[playerUid] = new WaitPointReport
-            {
-                PlayerUid = playerUid,
-                RouteId = routeId,
-                SyncPointId = syncPointId,
-                WorldRound = worldRound,
-                ReportedTime = DateTime.UtcNow,
-                ExpiryTime = DateTime.UtcNow.AddSeconds(300) // 5分钟超时
-            };
         }
         
         _logger.LogInformation("[WaitPointReport] 玩家 {Uid} 上报等待点：路线={Route}，同步点={Sync}，轮次={Round}，房间={Code}", 
             playerUid, routeId, syncPointId, worldRound, roomCode);
-        
-        // 广播等待点上报给所有玩家（异常协调中心：只记录和广播，不协调）
-        await Clients.Group(roomCode).SendAsync("WaitPointReported", 
-            playerUid, routeId, syncPointId, worldRound, DateTime.UtcNow);
-        
-        // 异常协调中心：记录等待点，但不进行复杂协调
-        // 每个异常玩家在自己的同步点等待，客户端自行处理协调逻辑
-    }
 
-    /// <summary>
-    /// 协调多个玩家的等待点（采用"最落后玩家"原则）
-    /// </summary>
-    private CoordinatedWaitPoint? CoordinateWaitPoints(Room room)
-    {
+        // 验证等待点格式（需求 2.2, 7.1 - 7.2）
+        if (!ValidateWaitPointIsTeleport(syncPointId, out var validationError))
+        {
+            _logger.LogWarning("[WaitPointReport] 等待点验证失败: {Error}，尝试选择第一个传送点", validationError);
+            // 选择该线路的第一个传送点（需求 7.2 - 7.3）
+            syncPointId = GetFirstTeleportPoint(routeId);
+        }
+
+        // 计算统一等待点（需求 2.1）
+        var unifiedWaitPoint = CalculateUnifiedWaitPoint(routeId, syncPointId);
+        
+        // 计算预期等待人数（需求 2.3）
+        int expectedWaitCount = CalculateExpectedWaitCount(room, playerUid);
+        
+        // 更新房间状态
         lock (room)
         {
-            // 清理过期的等待点
-            var now = DateTime.UtcNow;
-            var expiredKeys = room.WaitPoints
-                .Where(kv => kv.Value.IsExpired())
-                .Select(kv => kv.Key)
-                .ToList();
+            // 记录异常玩家状态（需求 1.3）
+            room.AbnormalPlayerStates[playerUid] = new AbnormalPlayerState(
+                playerUid, routeId, unifiedWaitPoint, worldRound
+            );
             
-            foreach (var key in expiredKeys)
+            // 设置当前统一等待点（需求 2.1）
+            room.CurrentUnifiedWaitPoint = new UnifiedWaitPoint(
+                unifiedWaitPoint, routeId, worldRound, expectedWaitCount
+            );
+            room.CurrentUnifiedWaitPoint.AbnormalPlayerUids.Add(playerUid);
+
+            // 更新玩家异常状态
+            var player = room.Players.FirstOrDefault(p => p.ConnectionId == Context.ConnectionId);
+            if (player != null)
             {
-                room.WaitPoints.Remove(key);
-                _logger.LogDebug("[CoordinateWaitPoints] 清理过期等待点：玩家{PlayerUid}", key);
+                player.IsAbnormal = true;
+                player.WaitPointId = unifiedWaitPoint;
             }
-            
-            if (room.WaitPoints.Count == 0) return null;
-            
-            // 使用CoordinatedWaitPoint的静态协调方法
-            var coordinatedPoint = CoordinatedWaitPoint.Coordinate(room.WaitPoints.Values);
-            
-            if (coordinatedPoint != null)
+
+            // 存储等待点（用于记录和兼容旧逻辑）
+            room.WaitPoints[playerUid] = new WaitPointReport
             {
-                // 检查协调结果是否发生变化
-                bool hasChanged = room.CoordinatedWaitPoint == null || 
-                                 !room.CoordinatedWaitPoint.RouteId.Equals(coordinatedPoint.RouteId, StringComparison.Ordinal) ||
-                                 !room.CoordinatedWaitPoint.SyncPointId.Equals(coordinatedPoint.SyncPointId, StringComparison.Ordinal);
-                
-                if (hasChanged)
-                {
-                    _logger.LogInformation("[CoordinateWaitPoints] 房间 {Code} 协调出新的统一等待点：路线={Route}，同步点={Sync}，对齐玩家={Players}", 
-                        room.Code, coordinatedPoint.RouteId, coordinatedPoint.SyncPointId,
-                        string.Join(",", coordinatedPoint.AlignedPlayers));
-                }
-                else
-                {
-                    _logger.LogDebug("[CoordinateWaitPoints] 房间 {Code} 协调结果未变化：路线={Route}，同步点={Sync}，对齐玩家={Players}", 
-                        room.Code, coordinatedPoint.RouteId, coordinatedPoint.SyncPointId,
-                        string.Join(",", coordinatedPoint.AlignedPlayers));
-                }
-            }
-            
-            return coordinatedPoint;
+                PlayerUid = playerUid,
+                RouteId = routeId,
+                SyncPointId = unifiedWaitPoint,
+                WorldRound = worldRound,
+                ReportedTime = DateTime.UtcNow,
+                ExpiryTime = DateTime.UtcNow.AddMinutes(5) // 5分钟超时
+            };
         }
+        
+        _logger.LogInformation("[WaitPointReport] 异常玩家{Uid}上报等待点，统一等待点={WaitPoint}，预期人数={Expected}",
+            playerUid, unifiedWaitPoint, expectedWaitCount);
+        
+        // 广播 UnifiedWaitPoint 给所有玩家（需求 2.3）
+        // 正常玩家将收到消息并在指定位置等待
+        await Clients.Group(roomCode).SendAsync("UnifiedWaitPoint", 
+            unifiedWaitPoint, new List<string> { playerUid }, expectedWaitCount, routeId);
+        
+        _logger.LogInformation("[WaitPointReport] 已广播 UnifiedWaitPoint: 房间={RoomCode}, 等待点={WaitPoint}, 异常玩家=[{Players}], 预期人数={Expected}",
+            roomCode, unifiedWaitPoint, playerUid, expectedWaitCount);
     }
 
     /// <summary>
-    /// 多轮世界重置（skip-route-wait-point-report 修复）
-    /// 多轮世界新轮次开始时调用，清理所有等待点状态
+    /// 多轮世界重置（multiplayer-abnormal-wait-coordination 重构）
+    /// 多轮世界新轮次开始时调用，清理所有等待点状态和异常状态
     /// </summary>
     public Task ResetForNewWorldRound(int newRound)
     {
@@ -591,10 +608,261 @@ public class CoordinatorHub : Hub
         {
             room.CurrentWorldRound = newRound;
             room.WaitPoints.Clear(); // 清理所有等待点
-            _logger.LogInformation("[ResetForNewWorldRound] 房间{RoomCode}进入第{Round}轮，等待点已重置", roomCode, newRound);
+            
+            // 清理异常玩家状态（multiplayer-abnormal-wait-coordination 需求 8.5）
+            room.AbnormalPlayerStates.Clear();
+            room.CurrentUnifiedWaitPoint = null;
+            room.WaitPointArrivals.Clear();
+            
+            // 清理玩家异常状态标记
+            foreach (var player in room.Players)
+            {
+                player.IsAbnormal = false;
+                player.WaitPointId = null;
+            }
+            
+            _logger.LogInformation("[ResetForNewWorldRound] 房间{RoomCode}进入第{Round}轮，等待点、异常状态已重置", roomCode, newRound);
         }
         
         return Task.CompletedTask;
+    }
+
+    // === 等待点验证与计算方法（multiplayer-abnormal-wait-coordination 需求 2、7）===
+
+    /// <summary>
+    /// 验证等待点是否为传送点格式（需求 7.1 - 7.2）
+    /// 等待点必须包含 _tp_ 标识符
+    /// </summary>
+    /// <param name="syncPointId">同步点ID</param>
+    /// <param name="errorMessage">错误信息（验证失败时填充）</param>
+    /// <returns>是否为有效的传送点格式</returns>
+    private bool ValidateWaitPointIsTeleport(string syncPointId, out string errorMessage)
+    {
+        errorMessage = "";
+
+        if (string.IsNullOrEmpty(syncPointId))
+        {
+            errorMessage = "等待点ID为空";
+            _logger.LogWarning("[ValidateWaitPointIsTeleport] 验证失败：等待点ID为空");
+            return false;
+        }
+
+        if (!syncPointId.Contains("_tp_"))
+        {
+            errorMessage = $"等待点 {syncPointId} 不是传送点格式（必须包含 _tp_）";
+            _logger.LogWarning("[ValidateWaitPointIsTeleport] 验证失败：{SyncPointId} 不是传送点格式", syncPointId);
+            return false;
+        }
+
+        _logger.LogDebug("[ValidateWaitPointIsTeleport] 验证通过：{SyncPointId} 是有效的传送点", syncPointId);
+        return true;
+    }
+
+    /// <summary>
+    /// 获取线路的第一个传送点ID（需求 7.3 - 7.4）
+    /// 格式：{routeId}_tp_0_0
+    /// </summary>
+    /// <param name="routeId">路线ID</param>
+    /// <returns>第一个传送点ID</returns>
+    private string GetFirstTeleportPoint(string routeId)
+    {
+        // 优先选择 _tp_0_0 格式（需求 7.3）
+        var firstTp = $"{routeId}_tp_0_0";
+        _logger.LogDebug("[GetFirstTeleportPoint] 路线 {RouteId} 的第一个传送点: {FirstTp}", routeId, firstTp);
+        return firstTp;
+    }
+
+    /// <summary>
+    /// 计算统一等待点（需求 2.1）
+    /// 规则：验证上报的等待点，如果不是传送点则回退到该线路的第一个传送点
+    /// </summary>
+    /// <param name="routeId">路线ID</param>
+    /// <param name="reportedSyncPointId">上报的同步点ID</param>
+    /// <returns>统一等待点ID</returns>
+    private string CalculateUnifiedWaitPoint(string routeId, string reportedSyncPointId)
+    {
+        // 验证上报的等待点
+        if (!ValidateWaitPointIsTeleport(reportedSyncPointId, out var errorMessage))
+        {
+            _logger.LogWarning("[CalculateUnifiedWaitPoint] 上报的等待点验证失败: {Error}，回退到该线路的第一个传送点", errorMessage);
+            // 回退到该线路的第一个传送点
+            return GetFirstTeleportPoint(routeId);
+        }
+
+        // 等待点有效，使用该点
+        _logger.LogInformation("[CalculateUnifiedWaitPoint] 统一等待点: {SyncPointId}", reportedSyncPointId);
+        return reportedSyncPointId;
+    }
+
+    /// <summary>
+    /// 计算预期等待人数（需求 2.3）
+    /// 规则：已到达该线路的正常玩家数 + 异常玩家数
+    /// </summary>
+    /// <param name="room">房间实例</param>
+    /// <param name="abnormalPlayerUid">异常玩家UID</param>
+    /// <returns>预期等待人数</returns>
+    private int CalculateExpectedWaitCount(Room room, string abnormalPlayerUid)
+    {
+        lock (room)
+        {
+            int normalPlayersAtRoute = 0;
+            int abnormalPlayersAtRoute = 0;
+
+            foreach (var player in room.Players)
+            {
+                // 跳过离线玩家（超过2分钟无心跳）
+                if (DateTime.UtcNow - player.LastHeartbeat > TimeSpan.FromMinutes(2))
+                {
+                    _logger.LogDebug("[CalculateExpectedWaitCount] 跳过离线玩家: {PlayerUid}", player.PlayerUid);
+                    continue;
+                }
+
+                if (player.PlayerUid == abnormalPlayerUid)
+                {
+                    abnormalPlayersAtRoute++;
+                    _logger.LogDebug("[CalculateExpectedWaitCount] 异常玩家: {PlayerUid}", player.PlayerUid);
+                }
+                else if (!player.IsAbnormal)
+                {
+                    normalPlayersAtRoute++;
+                    _logger.LogDebug("[CalculateExpectedWaitCount] 正常玩家: {PlayerUid}", player.PlayerUid);
+                }
+            }
+
+            int expectedCount = normalPlayersAtRoute + abnormalPlayersAtRoute;
+            _logger.LogInformation("[CalculateExpectedWaitCount] 正常玩家={Normal}, 异常玩家={Abnormal}, 总计={Total}",
+                normalPlayersAtRoute, abnormalPlayersAtRoute, expectedCount);
+
+            return Math.Max(1, expectedCount);
+        }
+    }
+
+    // === 到达上报与广播方法（multiplayer-abnormal-wait-coordination 需求 5）===
+
+    /// <summary>
+    /// 上报到达等待点（需求 5.1, 5.4）
+    /// 玩家到达统一等待点后调用，服务端记录到达并在全员到达后广播
+    /// </summary>
+    /// <param name="syncPointId">同步点ID</param>
+    public async Task ReportArrivalAtWaitPoint(string syncPointId)
+    {
+        var (room, roomCode) = _roomManager.GetRoomByConnectionId(Context.ConnectionId);
+        if (room == null || roomCode == null)
+        {
+            _logger.LogWarning("[ReportArrivalAtWaitPoint] 连接 {ConnId} 未在任何房间中，忽略到达上报", Context.ConnectionId);
+            return;
+        }
+
+        _roomManager.UpdateHeartbeat(Context.ConnectionId);
+        
+        string playerUid;
+        bool isAbnormal;
+        lock (room)
+        {
+            var player = room.Players.FirstOrDefault(p => p.ConnectionId == Context.ConnectionId);
+            if (player == null)
+            {
+                _logger.LogWarning("[ReportArrivalAtWaitPoint] 连接 {ConnId} 不在房间玩家列表中", Context.ConnectionId);
+                return;
+            }
+            playerUid = player.PlayerUid;
+            isAbnormal = player.IsAbnormal;
+        }
+        
+        _logger.LogInformation("[ReportArrivalAtWaitPoint] 玩家 {Uid} 到达等待点 {SyncPoint}，是否异常={IsAbnormal}",
+            playerUid, syncPointId, isAbnormal);
+        
+        // 记录到达
+        bool allArrived = _roomManager.RecordWaitPointArrival(roomCode, syncPointId, playerUid, isAbnormal);
+        
+        if (allArrived)
+        {
+            _logger.LogInformation("[ReportArrivalAtWaitPoint] 等待点 {SyncPointId} 全员到达，广播 AllPlayersArrived", syncPointId);
+            
+            // 清除异常状态（需求 5.4）
+            lock (room)
+            {
+                var unifiedWaitPoint = room.CurrentUnifiedWaitPoint;
+                if (unifiedWaitPoint != null && unifiedWaitPoint.SyncPointId == syncPointId)
+                {
+                    foreach (var uid in unifiedWaitPoint.AbnormalPlayerUids)
+                    {
+                        if (room.AbnormalPlayerStates.TryGetValue(uid, out var state))
+                        {
+                            state.MarkAsRecovered();
+                            _logger.LogInformation("[ReportArrivalAtWaitPoint] 异常玩家 {Uid} 已恢复正常", uid);
+                        }
+                        
+                        // 更新玩家状态
+                        var abnormalPlayer = room.Players.FirstOrDefault(p => p.PlayerUid == uid);
+                        if (abnormalPlayer != null)
+                        {
+                            abnormalPlayer.IsAbnormal = false;
+                            abnormalPlayer.WaitPointId = null;
+                        }
+                    }
+                    
+                    // 清除当前统一等待点
+                    room.CurrentUnifiedWaitPoint = null;
+                }
+            }
+            
+            // 广播 AllPlayersArrived（需求 5.4）
+            await Clients.Group(roomCode).SendAsync("AllPlayersArrived", syncPointId);
+            _logger.LogInformation("[ReportArrivalAtWaitPoint] 已广播 AllPlayersArrived: 房间={RoomCode}, 等待点={SyncPointId}",
+                roomCode, syncPointId);
+        }
+        else
+        {
+            // 记录当前进度
+            var (arrived, expected) = _roomManager.GetWaitPointArrivalStatus(roomCode, syncPointId);
+            _logger.LogDebug("[ReportArrivalAtWaitPoint] 等待点 {SyncPointId} 到达进度: {Arrived}/{Expected}",
+                syncPointId, arrived, expected);
+        }
+    }
+
+    /// <summary>
+    /// 清除异常状态（需求 5.3, 5.5）
+    /// 异常玩家恢复正常后调用，服务端更新状态并广播
+    /// </summary>
+    public async Task ClearAbnormalStatus()
+    {
+        var (room, roomCode) = _roomManager.GetRoomByConnectionId(Context.ConnectionId);
+        if (room == null || roomCode == null)
+        {
+            _logger.LogWarning("[ClearAbnormalStatus] 连接 {ConnId} 未在任何房间中，忽略状态清除", Context.ConnectionId);
+            return;
+        }
+
+        string playerUid;
+        lock (room)
+        {
+            var player = room.Players.FirstOrDefault(p => p.ConnectionId == Context.ConnectionId);
+            if (player == null)
+            {
+                _logger.LogWarning("[ClearAbnormalStatus] 连接 {ConnId} 不在房间玩家列表中", Context.ConnectionId);
+                return;
+            }
+            playerUid = player.PlayerUid;
+            
+            // 清除异常状态
+            if (room.AbnormalPlayerStates.TryGetValue(playerUid, out var state))
+            {
+                state.MarkAsRecovered();
+                _logger.LogInformation("[ClearAbnormalStatus] 异常玩家 {Uid} 的状态已标记为恢复", playerUid);
+            }
+            
+            // 更新玩家信息
+            player.IsAbnormal = false;
+            player.WaitPointId = null;
+        }
+        
+        _logger.LogInformation("[ClearAbnormalStatus] 异常玩家 {Uid} 已恢复正常", playerUid);
+        
+        // 广播 AbnormalPlayerRecovered（需求 5.3）
+        await Clients.Group(roomCode).SendAsync("AbnormalPlayerRecovered", playerUid);
+        _logger.LogInformation("[ClearAbnormalStatus] 已广播 AbnormalPlayerRecovered: 房间={RoomCode}, 玩家={PlayerUid}",
+            roomCode, playerUid);
     }
 
 

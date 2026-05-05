@@ -45,4 +45,25 @@ public class Room
 
     /// <summary>协调后的统一等待点</summary>
     public CoordinatedWaitPoint? CoordinatedWaitPoint { get; set; }
+
+    // === 异常等待协调机制字段（multiplayer-abnormal-wait-coordination spec）===
+    // Validates: Requirements 1.1, 1.3, 1.4
+
+    /// <summary>
+    /// 玩家异常状态：playerUid → AbnormalPlayerState
+    /// 服务端维护所有玩家的异常状态，用于计算统一等待点
+    /// </summary>
+    public Dictionary<string, AbnormalPlayerState> AbnormalPlayerStates { get; set; } = new();
+
+    /// <summary>
+    /// 当前统一等待点（服务端计算）
+    /// 指示正常玩家应在何处等待异常玩家
+    /// </summary>
+    public UnifiedWaitPoint? CurrentUnifiedWaitPoint { get; set; }
+
+    /// <summary>
+    /// 等待点到达记录：syncPointId → 已到达的 playerUid 集合
+    /// 用于追踪哪些玩家已到达统一等待点
+    /// </summary>
+    public Dictionary<string, HashSet<string>> WaitPointArrivals { get; set; } = new();
 }

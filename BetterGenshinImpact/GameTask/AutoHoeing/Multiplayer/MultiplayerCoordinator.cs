@@ -50,6 +50,22 @@ public class MultiplayerCoordinator : IAsyncDisposable
 
     // === 异常玩家超时退出机制 ===
     private readonly ConcurrentDictionary<string, AbnormalPlayerTimeoutContext> _abnormalPlayerTimeouts = new();
+    
+    // === 统一等待点协调（multiplayer-abnormal-wait-coordination）===
+    /// <summary>服务端指令的待处理等待点</summary>
+    private PendingWaitPoint? _pendingWaitPoint;
+    /// <summary>是否处于降级模式（服务端不可用时回退到本地计算）</summary>
+    private volatile bool _isDegraded;
+    /// <summary>最后一次与服务端成功通信的时间</summary>
+    private DateTime _lastServerContactTime = DateTime.UtcNow;
+    /// <summary>服务端不可用阈值（超过此时间视为服务端不可用）</summary>
+    private static readonly TimeSpan ServerUnavailableThreshold = TimeSpan.FromSeconds(10);
+    /// <summary>统一等待点事件处理器</summary>
+    private readonly Action<string, List<string>, int, string> _onUnifiedWaitPointReceivedHandler;
+    /// <summary>异常玩家恢复事件处理器</summary>
+    private readonly Action<string> _onAbnormalPlayerRecoveredHandler;
+    /// <summary>所有玩家已到达事件处理器</summary>
+    private readonly Action<string> _onAllPlayersArrivedHandler;
 
     /// <summary>
     /// 获取玩家显示名称（优先使用名称，找不到则显示 UID 前后各3位）
@@ -142,6 +158,7 @@ public class MultiplayerCoordinator : IAsyncDisposable
         _onMemberStatusChangedHandler = (playerUid, status) =>
         {
             _logger.LogInformation("[联机] 成员状态变化: {PlayerName} → {Status}", GetPlayerDisplayName(playerUid), status);
+            
             if (status == MemberStatus.Offline)
             {
                 _logger.LogWarning("[联机] 成员 {PlayerName} 已离线", GetPlayerDisplayName(playerUid));
@@ -167,6 +184,18 @@ public class MultiplayerCoordinator : IAsyncDisposable
                         _logger.LogInformation("[联机] 成员离线，剩余 {Count} 个在线成员，继续执行", onlineMembers);
                     }
                 }
+            }
+            else if (status == MemberStatus.Reviving || status == MemberStatus.Rejoining)
+            {
+                // 成员进入异常恢复状态，记录到状态管理器
+                // 注意：此时还不知道具体的等待点，但可以标记该玩家为异常状态
+                _logger.LogInformation("[联机] 成员 {PlayerName} 进入异常恢复状态: {Status}", GetPlayerDisplayName(playerUid), status);
+            }
+            else if (status == MemberStatus.Normal)
+            {
+                // 成员恢复正常，从异常状态中移除（如果有的话）
+                // 注意：不清除 _stateManager 中的等待点状态，因为这需要等待点同步完成后才能清除
+                _logger.LogDebug("[联机] 成员 {PlayerName} 状态恢复正常", GetPlayerDisplayName(playerUid));
             }
         };
         _client.OnMemberStatusChanged += _onMemberStatusChangedHandler;
@@ -210,10 +239,61 @@ public class MultiplayerCoordinator : IAsyncDisposable
             _logger.LogDebug("[联机] 已记录等待点到 SyncBarrier: {SyncPointId}", syncPointId);
         };
         _client.WaitPointReported += _onWaitPointReportedHandler;
+        
+        // 统一等待点事件处理（multiplayer-abnormal-wait-coordination）
+        _onUnifiedWaitPointReceivedHandler = (syncPointId, abnormalPlayerUids, expectedWaitCount, routeId) =>
+        {
+            _logger.LogInformation("[联机] 收到统一等待点广播: SyncPoint={SyncPointId}, 异常玩家=[{AbnormalPlayers}], 预期人数={ExpectedCount}, 路线={RouteId}", 
+                syncPointId, string.Join(", ", abnormalPlayerUids.Select(GetPlayerDisplayName)), expectedWaitCount, routeId);
+            OnUnifiedWaitPointReceived(syncPointId, abnormalPlayerUids, expectedWaitCount, routeId);
+        };
+        _client.UnifiedWaitPointReceived += _onUnifiedWaitPointReceivedHandler;
+        
+        // 异常玩家恢复事件处理
+        _onAbnormalPlayerRecoveredHandler = playerUid =>
+        {
+            _logger.LogInformation("[联机] 收到异常玩家恢复广播: {PlayerName}", GetPlayerDisplayName(playerUid));
+            OnAbnormalPlayerRecoveredReceived(playerUid);
+        };
+        _client.AbnormalPlayerRecoveredReceived += _onAbnormalPlayerRecoveredHandler;
+        
+        // 所有玩家已到达事件处理
+        _onAllPlayersArrivedHandler = syncPointId =>
+        {
+            _logger.LogInformation("[联机] 收到所有玩家已到达广播: {SyncPointId}", syncPointId);
+            OnAllPlayersArrivedReceived(syncPointId);
+        };
+        _client.AllPlayersArrivedReceived += _onAllPlayersArrivedHandler;
+    }
+    
+    // === 异常玩家等待点上报辅助方法（multiplayer-abnormal-wait-coordination）===
+    
+    /// <summary>
+    /// 验证等待点是否为传送点格式（需求 4.1, 7.1）
+    /// </summary>
+    /// <param name="syncPointId">同步点ID</param>
+    /// <returns>true=有效的传送点格式，false=无效</returns>
+    public static bool IsValidWaitPoint(string syncPointId)
+    {
+        return !string.IsNullOrEmpty(syncPointId) && syncPointId.Contains("_tp_");
+    }
+    
+    /// <summary>
+    /// 获取下一条线路的第一个传送点（需求 7.2, 7.3）
+    /// </summary>
+    /// <param name="currentRouteIndex">当前路线索引</param>
+    /// <param name="routeFileName">路线文件名（可选，用于构建完整ID）</param>
+    /// <returns>下一条线路的第一个传送点ID，格式：{routeId}_tp_0_0</returns>
+    public static string GetNextRouteFirstTeleportPoint(int currentRouteIndex, string? routeFileName = null)
+    {
+        var nextRouteId = (currentRouteIndex + 1).ToString();
+        // 传送点格式：{routeFileName}_{routeId}_tp_{listIdx}_{wpIdx}
+        // 简化格式：{routeId}_tp_0_0（服务端会验证并补充）
+        return $"{nextRouteId}_tp_0_0";
     }
 
     /// <summary>
-    /// 上报等待点（skip-route-wait-point-report 修复）
+    /// 上报等待点（需求 4.1, 4.2, 7.1, 7.2, 7.3, 7.4）
     /// 调用 CoordinatorClient.SendWaitPointReportAsync，包含容错处理（失败时回退到 RouteSkipped）
     /// 记录上报日志用于监控
     /// </summary>
@@ -221,6 +301,18 @@ public class MultiplayerCoordinator : IAsyncDisposable
     {
         try
         {
+            // 验证等待点格式（需求 7.1）
+            if (!IsValidWaitPoint(syncPointId))
+            {
+                _logger.LogWarning("[联机] 等待点格式无效（非传送点）: {SyncPointId}，尝试获取下一条线路的第一个传送点", syncPointId);
+                // 尝试获取下一条线路的第一个传送点
+                if (int.TryParse(routeId, out var routeIndex))
+                {
+                    syncPointId = GetNextRouteFirstTeleportPoint(routeIndex);
+                    _logger.LogInformation("[联机] 使用下一条线路的第一个传送点: {SyncPointId}", syncPointId);
+                }
+            }
+            
             // 更新本地状态
             var playerUid = TaskContext.Instance().Config.AutoHoeingConfig.PlayerUid;
             var state = new WaitPointState
@@ -365,12 +457,26 @@ public class MultiplayerCoordinator : IAsyncDisposable
     }
 
     /// <summary>
-    /// 计算指定同步点的有效等待人数
-    /// 核心逻辑：只计算已到达该线路的玩家
+    /// 计算指定同步点的有效等待人数（需求 6.1, 6.2, 6.4）
+    /// 优先使用服务端提供的预期人数，服务端不可用时回退到本地计算
     /// </summary>
     private int CalculateEffectiveWaitCount(string syncId)
     {
-        // 获取当前同步点等待的异常玩家数
+        // 优先使用服务端指令的预期人数（需求 6.2）
+        if (_pendingWaitPoint != null && !_pendingWaitPoint.IsProcessed && !_pendingWaitPoint.IsExpired())
+        {
+            _logger.LogInformation("[联机] 使用服务端预期等待人数: {ExpectedCount}（服务端指令）", _pendingWaitPoint.ExpectedWaitCount);
+            return _pendingWaitPoint.ExpectedWaitCount;
+        }
+        
+        // 服务端不可用时回退到本地计算（需求 6.4）
+        if (!IsServerAvailable())
+        {
+            _logger.LogWarning("[联机] 服务端不可用，使用本地降级计算");
+            return CalculateLocalEffectiveWaitCount(syncId);
+        }
+        
+        // 本地计算：获取当前同步点等待的异常玩家数
         int abnormalAtPoint = _stateManager.GetAbnormalPlayersAtPoint(syncId);
         
         // 获取当前同步点关联的线路ID
@@ -393,6 +499,24 @@ public class MultiplayerCoordinator : IAsyncDisposable
         _logger.LogInformation("[联机] 同步点 {SyncId} 有效等待人数计算: 线路{RouteId}玩家={PlayersInRoute}, " +
             "异常等待={AbnormalAtPoint}, 总计={EffectiveCount}", 
             syncId, routeId, playersInRoute, abnormalAtPoint, effectiveCount);
+        
+        return Math.Max(1, effectiveCount);
+    }
+    
+    /// <summary>
+    /// 本地降级计算有效等待人数（需求 6.3, 6.4）
+    /// 服务端不可用时使用简化逻辑
+    /// </summary>
+    private int CalculateLocalEffectiveWaitCount(string syncId)
+    {
+        // 降级模式：使用房间人数减去离线人数
+        int offlineCount;
+        lock (_offlineLock) { offlineCount = _offlineMembers.Count; }
+        
+        int effectiveCount = _client.CurrentRoomPlayerCount - offlineCount;
+        
+        _logger.LogInformation("[联机] 降级模式计算有效等待人数: 房间人数={RoomCount}, 离线人数={OfflineCount}, 有效人数={EffectiveCount}", 
+            _client.CurrentRoomPlayerCount, offlineCount, effectiveCount);
         
         return Math.Max(1, effectiveCount);
     }
@@ -980,12 +1104,242 @@ public class MultiplayerCoordinator : IAsyncDisposable
         {
             await _client.ReportMemberStatusAsync(status);
             _logger.LogInformation("[联机] 上报成员状态: {Status}", status);
+            
+            // 自己上报的状态也需要本地记录（因为 SignalR 广播不会发给自己）
+            var myUid = TaskContext.Instance().Config.AutoHoeingConfig.PlayerUid;
+            if (status == MemberStatus.Reviving || status == MemberStatus.Rejoining)
+            {
+                // 进入异常恢复状态，标记自己为异常玩家
+                // 注意：此时还不知道具体的等待点，用空字符串标记
+                var state = new WaitPointState
+                {
+                    PlayerUid = myUid,
+                    RouteId = "",
+                    SyncPointId = "",
+                    WorldRound = GetCurrentWorldRound(),
+                    LastUpdated = DateTime.UtcNow
+                };
+                _stateManager.UpdateState(myUid, state);
+                _logger.LogInformation("[联机] 本地记录异常状态: {PlayerName} → {Status}", GetPlayerDisplayName(myUid), status);
+            }
+            else if (status == MemberStatus.Normal)
+            {
+                // 恢复正常状态，但不清除等待点记录（需要等待点同步完成后再清除）
+                _logger.LogDebug("[联机] 本地状态恢复正常: {PlayerName}", GetPlayerDisplayName(myUid));
+            }
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "[联机] 上报成员状态失败（静默忽略），状态: {Status}", status);
         }
     }
+    
+    // === 统一等待点协调处理（multiplayer-abnormal-wait-coordination）===
+    
+    /// <summary>
+    /// 处理服务端广播的统一等待点（需求 3.1, 3.2）
+    /// </summary>
+    /// <param name="syncPointId">统一等待点ID（传送点格式）</param>
+    /// <param name="abnormalPlayerUids">异常玩家UID列表</param>
+    /// <param name="expectedWaitCount">预期等待人数</param>
+    /// <param name="routeId">路线ID</param>
+    private void OnUnifiedWaitPointReceived(string syncPointId, List<string> abnormalPlayerUids, int expectedWaitCount, string routeId)
+    {
+        try
+        {
+            // 更新服务端通信时间
+            _lastServerContactTime = DateTime.UtcNow;
+            
+            // 验证等待点格式（必须是传送点）
+            if (!syncPointId.Contains("_tp_"))
+            {
+                _logger.LogWarning("[联机] 收到非传送点格式的统一等待点: {SyncPointId}，忽略", syncPointId);
+                return;
+            }
+            
+            // 创建待处理等待点
+            _pendingWaitPoint = new PendingWaitPoint
+            {
+                SyncPointId = syncPointId,
+                RouteId = routeId,
+                AbnormalPlayerUids = abnormalPlayerUids,
+                ExpectedWaitCount = expectedWaitCount,
+                ReceivedTime = DateTime.UtcNow,
+                IsForced = true, // 服务端指令的等待点，强制等待
+                IsProcessed = false
+            };
+            
+            // 更新等待点状态管理器，记录异常玩家
+            foreach (var uid in abnormalPlayerUids)
+            {
+                var state = new WaitPointState
+                {
+                    PlayerUid = uid,
+                    RouteId = routeId,
+                    SyncPointId = syncPointId,
+                    WorldRound = GetCurrentWorldRound(),
+                    LastUpdated = DateTime.UtcNow
+                };
+                _stateManager.UpdateState(uid, state);
+            }
+            
+            _logger.LogInformation("[联机] 已设置服务端指令的统一等待点: {SyncPointId}, 异常玩家=[{AbnormalPlayers}], 预期人数={ExpectedCount}", 
+                syncPointId, string.Join(", ", abnormalPlayerUids.Select(GetPlayerDisplayName)), expectedWaitCount);
+            
+            // 同步到 SyncBarrier，确保 PathExecutor 能检测到异常等待点
+            _barrier.RecordWaitPointReport(routeId, syncPointId, GetCurrentWorldRound());
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[联机] 处理统一等待点广播异常");
+        }
+    }
+    
+    /// <summary>
+    /// 处理异常玩家恢复广播（需求 5.4）
+    /// </summary>
+    /// <param name="playerUid">恢复的异常玩家UID</param>
+    private void OnAbnormalPlayerRecoveredReceived(string playerUid)
+    {
+        try
+        {
+            _lastServerContactTime = DateTime.UtcNow;
+            
+            // 清除异常玩家状态
+            _stateManager.RemoveState(playerUid);
+            
+            // 取消该玩家的超时计时器
+            if (_abnormalPlayerTimeouts.TryGetValue(playerUid, out var ctx))
+            {
+                ctx.HasExited = true;
+                ctx.Cts.Cancel();
+                _abnormalPlayerTimeouts.TryRemove(playerUid, out _);
+            }
+            
+            // 如果是当前玩家恢复，清除本地状态
+            var myUid = TaskContext.Instance().Config.AutoHoeingConfig.PlayerUid;
+            if (playerUid == myUid && _reportedWaitPoint.HasValue)
+            {
+                _reportedWaitPoint = null;
+                _logger.LogInformation("[联机] 当前玩家异常状态已清除");
+            }
+            
+            _logger.LogInformation("[联机] 异常玩家 {PlayerName} 已恢复", GetPlayerDisplayName(playerUid));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[联机] 处理异常玩家恢复广播异常");
+        }
+    }
+    
+    /// <summary>
+    /// 处理所有玩家已到达广播（需求 5.3）
+    /// </summary>
+    /// <param name="syncPointId">同步点ID</param>
+    private void OnAllPlayersArrivedReceived(string syncPointId)
+    {
+        try
+        {
+            _lastServerContactTime = DateTime.UtcNow;
+            
+            // 标记待处理等待点已处理
+            if (_pendingWaitPoint != null && _pendingWaitPoint.SyncPointId == syncPointId)
+            {
+                _pendingWaitPoint.IsProcessed = true;
+                _logger.LogInformation("[联机] 统一等待点 {SyncPointId} 全员已到达，标记为已处理", syncPointId);
+            }
+            
+            // 清除所有异常状态
+            ClearAllAbnormalStatus();
+            
+            // 通知 SyncBarrier 放行
+            _barrier.SignalRouteSkipped(); // 复用此机制放行当前等待
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[联机] 处理所有玩家已到达广播异常");
+        }
+    }
+    
+    /// <summary>
+    /// 检查是否有待处理的服务端指令等待点
+    /// </summary>
+    public bool HasPendingWaitPoint => _pendingWaitPoint != null && !_pendingWaitPoint.IsProcessed && !_pendingWaitPoint.IsExpired();
+    
+    /// <summary>
+    /// 获取待处理等待点信息（供 PathExecutor 使用）
+    /// </summary>
+    public PendingWaitPoint? GetPendingWaitPoint()
+    {
+        return _pendingWaitPoint;
+    }
+    
+    /// <summary>
+    /// 清除待处理等待点
+    /// </summary>
+    public void ClearPendingWaitPoint()
+    {
+        if (_pendingWaitPoint != null)
+        {
+            _logger.LogInformation("[联机] 清除待处理等待点: {SyncPointId}", _pendingWaitPoint.SyncPointId);
+            _pendingWaitPoint = null;
+        }
+    }
+    
+    /// <summary>
+    /// 检查服务端是否可用（需求 8.1）
+    /// </summary>
+    /// <returns>true=服务端可用，false=服务端不可用，应进入降级模式</returns>
+    public bool IsServerAvailable()
+    {
+        // 检查客户端连接状态
+        if (!_client.IsConnected)
+        {
+            // 连接断开超过阈值，进入降级模式
+            var disconnectedTime = DateTime.UtcNow - _lastServerContactTime;
+            if (disconnectedTime > ServerUnavailableThreshold)
+            {
+                if (!_isDegraded)
+                {
+                    _logger.LogWarning("[联机] 服务端连接断开超过 {Threshold}s，进入降级模式", ServerUnavailableThreshold.TotalSeconds);
+                    _isDegraded = true;
+                }
+                return false;
+            }
+        }
+        
+        // 连接正常或断开时间未超过阈值
+        if (_isDegraded && _client.IsConnected)
+        {
+            _logger.LogInformation("[联机] 服务端连接恢复，退出降级模式");
+            _isDegraded = false;
+            _lastServerContactTime = DateTime.UtcNow;
+        }
+        
+        return _client.IsConnected;
+    }
+    
+    /// <summary>
+    /// 获取服务端不可用持续时长
+    /// </summary>
+    public TimeSpan GetServerUnavailableDuration()
+    {
+        if (_client.IsConnected) return TimeSpan.Zero;
+        return DateTime.UtcNow - _lastServerContactTime;
+    }
+    
+    /// <summary>
+    /// 更新服务端通信时间（在心跳成功时调用）
+    /// </summary>
+    public void UpdateServerContactTime()
+    {
+        _lastServerContactTime = DateTime.UtcNow;
+    }
+    
+    /// <summary>
+    /// 是否处于降级模式
+    /// </summary>
+    public bool IsDegraded => _isDegraded;
 
     /// <summary>多世界轮次切换时重置状态。</summary>
     public void ResetForNewRound()
@@ -1005,7 +1359,7 @@ public class MultiplayerCoordinator : IAsyncDisposable
         _reportedWaitPoint = null;
         _stateManager?.ResetCurrentRound();
         
-        // 异常玩家超时上下文清理（新增）
+        // 异常玩家超时上下文清理
         foreach (var ctx in _abnormalPlayerTimeouts.Values)
         {
             ctx.HasExited = true;
@@ -1013,7 +1367,12 @@ public class MultiplayerCoordinator : IAsyncDisposable
         }
         _abnormalPlayerTimeouts.Clear();
         
-        _logger.LogInformation("[联机] ResetForNewRound: 状态已重置（包含路线跳过对齐、等待点上报和异常超时状态）");
+        // 统一等待点协调重置（multiplayer-abnormal-wait-coordination）
+        _pendingWaitPoint = null;
+        _isDegraded = false;
+        _lastServerContactTime = DateTime.UtcNow;
+        
+        _logger.LogInformation("[联机] ResetForNewRound: 状态已重置（包含路线跳过对齐、等待点上报、异常超时和统一等待点协调状态）");
     }
 
     public async ValueTask DisposeAsync()
@@ -1022,6 +1381,11 @@ public class MultiplayerCoordinator : IAsyncDisposable
         _client.OnMemberStatusChanged -= _onMemberStatusChangedHandler;
         _client.RouteSkipped -= _onRouteSkippedHandler;
         _client.WaitPointReported -= _onWaitPointReportedHandler;
+        
+        // 清理统一等待点协调事件订阅（multiplayer-abnormal-wait-coordination）
+        _client.UnifiedWaitPointReceived -= _onUnifiedWaitPointReceivedHandler;
+        _client.AbnormalPlayerRecoveredReceived -= _onAbnormalPlayerRecoveredHandler;
+        _client.AllPlayersArrivedReceived -= _onAllPlayersArrivedHandler;
         
         // 清理等待点状态管理器资源
         _stateManager?.Dispose();

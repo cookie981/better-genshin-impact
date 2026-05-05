@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Linq;
 using BgiCoordinatorServer.Models;
+using Microsoft.Extensions.Logging;
 
 namespace BgiCoordinatorServer.Services;
 
@@ -15,10 +16,12 @@ public class RoomManager
     private readonly ConcurrentDictionary<string, string> _connectionRoomMap = new();
     private readonly ConcurrentDictionary<string, List<PlayerInfo>> _lastRemovedPlayers = new();
     private readonly int _maxRooms;
+    private readonly ILogger<RoomManager>? _logger;
 
-    public RoomManager(int maxRooms = 50)
+    public RoomManager(int maxRooms = 50, ILogger<RoomManager>? logger = null)
     {
         _maxRooms = maxRooms;
+        _logger = logger;
     }
 
     /// <summary>创建房间，返回唯一6位字母数字房间码。同一 UID 只保留最新房间。</summary>
@@ -425,6 +428,101 @@ public class RoomManager
                     player.RouteEstimatedSeconds = routeEstimatedSeconds;
                 }
             }
+        }
+    }
+
+    /// <summary>
+    /// 带完整状态的心跳更新（multiplayer-abnormal-wait-coordination 需求 1.2）
+    /// 更新玩家心跳时间、路线索引、异常状态和等待点信息
+    /// </summary>
+    /// <param name="connectionId">连接ID</param>
+    /// <param name="routeIndex">当前路线索引</param>
+    /// <param name="isAbnormal">是否为异常玩家</param>
+    /// <param name="waitPointId">当前等待点ID（异常玩家专用）</param>
+    public void UpdateHeartbeatWithState(string connectionId, int routeIndex, bool isAbnormal, string? waitPointId)
+    {
+        if (_connectionRoomMap.TryGetValue(connectionId, out var roomCode)
+            && _rooms.TryGetValue(roomCode, out var room))
+        {
+            lock (room)
+            {
+                var player = room.Players.FirstOrDefault(p => p.ConnectionId == connectionId);
+                if (player != null)
+                {
+                    player.LastHeartbeat = DateTime.UtcNow;
+                    player.CurrentRouteIndex = routeIndex;
+                    player.IsAbnormal = isAbnormal;
+                    player.WaitPointId = waitPointId;
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// 记录等待点到达（multiplayer-abnormal-wait-coordination 需求 5.2）
+    /// 当所有预期玩家都到达时返回 true
+    /// </summary>
+    /// <param name="roomCode">房间码</param>
+    /// <param name="syncPointId">同步点ID</param>
+    /// <param name="playerUid">玩家UID</param>
+    /// <param name="isAbnormal">是否为异常玩家</param>
+    /// <returns>是否全员已到达</returns>
+    public bool RecordWaitPointArrival(string roomCode, string syncPointId, string playerUid, bool isAbnormal)
+    {
+        if (!_rooms.TryGetValue(roomCode, out var room))
+        {
+            _logger?.LogWarning("[RecordWaitPointArrival] 房间 {RoomCode} 不存在", roomCode);
+            return false;
+        }
+
+        lock (room)
+        {
+            // 获取或创建到达记录
+            if (!room.WaitPointArrivals.TryGetValue(syncPointId, out var arrivals))
+            {
+                arrivals = new HashSet<string>();
+                room.WaitPointArrivals[syncPointId] = arrivals;
+            }
+            
+            arrivals.Add(playerUid);
+            
+            // 检查是否全员到达
+            var unifiedWaitPoint = room.CurrentUnifiedWaitPoint;
+            if (unifiedWaitPoint == null || unifiedWaitPoint.SyncPointId != syncPointId)
+            {
+                _logger?.LogDebug("[RecordWaitPointArrival] 无匹配的统一等待点或等待点ID不匹配: {SyncPointId}", syncPointId);
+                return false;
+            }
+            
+            // 预期人数 = 服务端计算的人数
+            int expectedCount = unifiedWaitPoint.ExpectedWaitCount;
+            
+            _logger?.LogInformation("[RecordWaitPointArrival] 等待点 {SyncPointId} 到达人数: {Arrived}/{Expected}",
+                syncPointId, arrivals.Count, expectedCount);
+            
+            return arrivals.Count >= expectedCount;
+        }
+    }
+
+    /// <summary>
+    /// 获取等待点到达状态（multiplayer-abnormal-wait-coordination 需求 5.2）
+    /// 返回已到达人数和预期人数
+    /// </summary>
+    /// <param name="roomCode">房间码</param>
+    /// <param name="syncPointId">同步点ID</param>
+    /// <returns>(已到达人数, 预期人数)</returns>
+    public (int Arrived, int Expected) GetWaitPointArrivalStatus(string roomCode, string syncPointId)
+    {
+        if (!_rooms.TryGetValue(roomCode, out var room))
+            return (0, 0);
+
+        lock (room)
+        {
+            int arrived = room.WaitPointArrivals.TryGetValue(syncPointId, out var arrivals) ? arrivals.Count : 0;
+            int expected = room.CurrentUnifiedWaitPoint?.SyncPointId == syncPointId 
+                ? room.CurrentUnifiedWaitPoint.ExpectedWaitCount 
+                : 0;
+            return (arrived, expected);
         }
     }
 
