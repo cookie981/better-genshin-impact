@@ -547,21 +547,17 @@ public class CoordinatorHub : Hub
         var unifiedWaitPoint = CalculateUnifiedWaitPoint(routeId, syncPointId);
         
         // 计算预期等待人数（需求 2.3）
-        int expectedWaitCount = CalculateExpectedWaitCount(room, playerUid);
-        
         // 更新房间状态
+        string finalUnifiedWaitPoint;
+        int expectedWaitCount;
+        List<string> allAbnormalPlayerUids;
+        
         lock (room)
         {
             // 记录异常玩家状态（需求 1.3）
             room.AbnormalPlayerStates[playerUid] = new AbnormalPlayerState(
                 playerUid, routeId, unifiedWaitPoint, worldRound
             );
-            
-            // 设置当前统一等待点（需求 2.1）
-            room.CurrentUnifiedWaitPoint = new UnifiedWaitPoint(
-                unifiedWaitPoint, routeId, worldRound, expectedWaitCount
-            );
-            room.CurrentUnifiedWaitPoint.AbnormalPlayerUids.Add(playerUid);
 
             // 更新玩家异常状态
             var player = room.Players.FirstOrDefault(p => p.ConnectionId == Context.ConnectionId);
@@ -581,18 +577,43 @@ public class CoordinatorHub : Hub
                 ReportedTime = DateTime.UtcNow,
                 ExpiryTime = DateTime.UtcNow.AddMinutes(5) // 5分钟超时
             };
+
+            // === 多异常玩家统一等待点计算 ===
+            // 选择路线索引最大的等待点作为统一等待点，合并所有异常玩家
+            finalUnifiedWaitPoint = CalculateFinalUnifiedWaitPoint(room, unifiedWaitPoint, routeId, playerUid);
+            
+            // 计算预期等待人数（所有在线玩家）
+            expectedWaitCount = CalculateExpectedWaitCountAll(room);
+            
+            // 获取所有异常玩家UID列表
+            allAbnormalPlayerUids = room.AbnormalPlayerStates.Keys.ToList();
+            
+            // 设置当前统一等待点（需求 2.1）
+            room.CurrentUnifiedWaitPoint = new UnifiedWaitPoint(
+                finalUnifiedWaitPoint, 
+                ExtractRouteIdFromSyncPoint(finalUnifiedWaitPoint), 
+                worldRound, 
+                expectedWaitCount
+            );
+            room.CurrentUnifiedWaitPoint.AbnormalPlayerUids.Clear();
+            foreach (var uid in allAbnormalPlayerUids)
+            {
+                room.CurrentUnifiedWaitPoint.AbnormalPlayerUids.Add(uid);
+            }
+
+            _logger.LogInformation("[WaitPointReport] 异常玩家{Uid}上报等待点，最终统一等待点={WaitPoint}，所有异常玩家=[{AbnormalPlayers}]，预期人数={Expected}",
+                playerUid, finalUnifiedWaitPoint, string.Join(", ", allAbnormalPlayerUids), expectedWaitCount);
         }
         
-        _logger.LogInformation("[WaitPointReport] 异常玩家{Uid}上报等待点，统一等待点={WaitPoint}，预期人数={Expected}",
-            playerUid, unifiedWaitPoint, expectedWaitCount);
-        
         // 广播 UnifiedWaitPoint 给所有玩家（需求 2.3）
-        // 正常玩家将收到消息并在指定位置等待
+        // 所有玩家（异常+正常）将收到消息并在指定位置汇合
+        // 注意：在 lock 外执行 await，避免死锁
+        var finalRouteId = ExtractRouteIdFromSyncPoint(finalUnifiedWaitPoint);
         await Clients.Group(roomCode).SendAsync("UnifiedWaitPoint", 
-            unifiedWaitPoint, new List<string> { playerUid }, expectedWaitCount, routeId);
+            finalUnifiedWaitPoint, allAbnormalPlayerUids, expectedWaitCount, finalRouteId);
         
         _logger.LogInformation("[WaitPointReport] 已广播 UnifiedWaitPoint: 房间={RoomCode}, 等待点={WaitPoint}, 异常玩家=[{Players}], 预期人数={Expected}",
-            roomCode, unifiedWaitPoint, playerUid, expectedWaitCount);
+            roomCode, finalUnifiedWaitPoint, string.Join(", ", allAbnormalPlayerUids), expectedWaitCount);
     }
 
     /// <summary>
@@ -910,5 +931,121 @@ public class CoordinatorHub : Hub
         }
 
         return [.. diffFiles];
+    }
+
+    // === 多异常玩家统一等待点计算方法 ===
+
+    /// <summary>
+    /// 计算最终统一等待点（选择路线索引最大的等待点）
+    /// </summary>
+    /// <param name="room">房间实例</param>
+    /// <param name="newWaitPoint">新上报的等待点</param>
+    /// <param name="newRouteId">新上报的路线ID</param>
+    /// <param name="newPlayerUid">新上报的玩家UID</param>
+    /// <returns>最终统一等待点ID</returns>
+    private string CalculateFinalUnifiedWaitPoint(Room room, string newWaitPoint, string newRouteId, string newPlayerUid)
+    {
+        // 获取新等待点的路线索引
+        int newRouteIndex = ExtractRouteIndexFromSyncPoint(newWaitPoint);
+        
+        // 如果已有统一等待点，比较路线索引
+        if (room.CurrentUnifiedWaitPoint != null)
+        {
+            int currentRouteIndex = ExtractRouteIndexFromSyncPoint(room.CurrentUnifiedWaitPoint.SyncPointId);
+            
+            if (newRouteIndex > currentRouteIndex)
+            {
+                // 新等待点更靠后，使用新等待点
+                _logger.LogInformation("[CalculateFinalUnifiedWaitPoint] 新等待点 {NewPoint}（线路{NewIndex}）比当前 {CurrentPoint}（线路{CurrentIndex}）更靠后，更新统一等待点",
+                    newWaitPoint, newRouteIndex, room.CurrentUnifiedWaitPoint.SyncPointId, currentRouteIndex);
+                return newWaitPoint;
+            }
+            else
+            {
+                // 当前等待点更靠后或相同，保持当前等待点
+                _logger.LogInformation("[CalculateFinalUnifiedWaitPoint] 当前等待点 {CurrentPoint}（线路{CurrentIndex}）比新等待点 {NewPoint}（线路{NewIndex}）更靠后或相同，保持当前",
+                    room.CurrentUnifiedWaitPoint.SyncPointId, currentRouteIndex, newWaitPoint, newRouteIndex);
+                return room.CurrentUnifiedWaitPoint.SyncPointId;
+            }
+        }
+        
+        // 没有现有统一等待点，使用新等待点
+        _logger.LogInformation("[CalculateFinalUnifiedWaitPoint] 首次上报，使用等待点 {NewPoint}（线路{NewIndex}）", newWaitPoint, newRouteIndex);
+        return newWaitPoint;
+    }
+
+    /// <summary>
+    /// 从同步点ID中提取路线索引
+    /// 格式：{routeId}_tp_{listIdx}_{wpIdx} 或 {fileName}_{routeId}_tp_{listIdx}_{wpIdx}
+    /// </summary>
+    private int ExtractRouteIndexFromSyncPoint(string syncPointId)
+    {
+        if (string.IsNullOrEmpty(syncPointId)) return -1;
+        
+        // 查找 _tp_ 标记
+        int tpIndex = syncPointId.IndexOf("_tp_");
+        if (tpIndex < 0) return -1;
+        
+        // _tp_ 前面的部分可能包含路线ID
+        // 格式可能是 "2_tp_0_0" 或 "fileName_2_tp_0_0"
+        string beforeTp = syncPointId.Substring(0, tpIndex);
+        
+        // 尝试解析最后一个数字作为路线索引
+        var parts = beforeTp.Split('_');
+        for (int i = parts.Length - 1; i >= 0; i--)
+        {
+            if (int.TryParse(parts[i], out int routeIndex))
+            {
+                return routeIndex;
+            }
+        }
+        
+        return -1;
+    }
+
+    /// <summary>
+    /// 从同步点ID中提取路线ID
+    /// </summary>
+    private string ExtractRouteIdFromSyncPoint(string syncPointId)
+    {
+        if (string.IsNullOrEmpty(syncPointId)) return "";
+        
+        int tpIndex = syncPointId.IndexOf("_tp_");
+        if (tpIndex < 0) return "";
+        
+        string beforeTp = syncPointId.Substring(0, tpIndex);
+        var parts = beforeTp.Split('_');
+        
+        if (parts.Length > 0)
+        {
+            // 返回最后一个部分（通常是路线索引）
+            return parts[^1];
+        }
+        
+        return "";
+    }
+
+    /// <summary>
+    /// 计算所有在线玩家的预期等待人数（正常玩家 + 异常玩家）
+    /// </summary>
+    private int CalculateExpectedWaitCountAll(Room room)
+    {
+        lock (room)
+        {
+            int count = 0;
+            foreach (var player in room.Players)
+            {
+                // 跳过离线玩家（超过2分钟无心跳）
+                if (DateTime.UtcNow - player.LastHeartbeat > TimeSpan.FromMinutes(2))
+                {
+                    continue;
+                }
+                count++;
+            }
+            
+            int expectedCount = Math.Max(1, count);
+            _logger.LogInformation("[CalculateExpectedWaitCountAll] 在线玩家总数={Total}", expectedCount);
+            return expectedCount;
+        }
     }
 }

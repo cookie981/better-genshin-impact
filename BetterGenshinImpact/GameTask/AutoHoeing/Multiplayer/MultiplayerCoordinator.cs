@@ -1157,6 +1157,52 @@ public class MultiplayerCoordinator : IAsyncDisposable
                 return;
             }
             
+            var myUid = TaskContext.Instance().Config.AutoHoeingConfig.PlayerUid;
+            bool iAmAbnormal = _reportedWaitPoint.HasValue;
+            bool needToMoveToNewWaitPoint = false;
+            
+            // 如果我是异常玩家，检查是否需要移动到新的等待点
+            if (iAmAbnormal)
+            {
+                var currentWaitPoint = _reportedWaitPoint.Value.syncPointId;
+                int currentRouteIndex = ExtractRouteIndexFromSyncPoint(currentWaitPoint);
+                int newRouteIndex = ExtractRouteIndexFromSyncPoint(syncPointId);
+                
+                // 如果新的统一等待点与当前等待点不同
+                if (currentWaitPoint != syncPointId)
+                {
+                    _logger.LogInformation("[联机] 异常玩家收到新的统一等待点: 当前={CurrentPoint}（线路{CurrentIndex}）, 新={NewPoint}（线路{NewIndex}）", 
+                        currentWaitPoint, currentRouteIndex, syncPointId, newRouteIndex);
+                    
+                    // 如果新等待点的路线索引 > 当前等待点，需要移动到新等待点
+                    if (newRouteIndex > currentRouteIndex)
+                    {
+                        needToMoveToNewWaitPoint = true;
+                        _logger.LogInformation("[联机] 异常玩家需要移动到新的统一等待点 {SyncPointId}", syncPointId);
+                        
+                        // 清除当前的异常等待状态，让 PathExecutor 继续执行
+                        _reportedWaitPoint = null;
+                        
+                        // 取消当前的超时计时器
+                        if (_abnormalPlayerTimeouts.TryGetValue(myUid, out var ctx))
+                        {
+                            ctx.HasExited = true;
+                            ctx.Cts.Cancel();
+                            _abnormalPlayerTimeouts.TryRemove(myUid, out _);
+                            _logger.LogInformation("[联机] 已取消异常玩家超时计时器，准备移动到新等待点");
+                        }
+                        
+                        // 通知 SyncBarrier 放行当前等待，让 PathExecutor 继续执行
+                        _barrier.SignalRouteSkipped();
+                    }
+                    else
+                    {
+                        _logger.LogInformation("[联机] 新等待点 {NewPoint}（线路{NewIndex}）不比当前 {CurrentPoint}（线路{CurrentIndex}）更靠后，保持当前等待",
+                            syncPointId, newRouteIndex, currentWaitPoint, currentRouteIndex);
+                    }
+                }
+            }
+            
             // 创建待处理等待点
             _pendingWaitPoint = new PendingWaitPoint
             {
@@ -1183,8 +1229,8 @@ public class MultiplayerCoordinator : IAsyncDisposable
                 _stateManager.UpdateState(uid, state);
             }
             
-            _logger.LogInformation("[联机] 已设置服务端指令的统一等待点: {SyncPointId}, 异常玩家=[{AbnormalPlayers}], 预期人数={ExpectedCount}", 
-                syncPointId, string.Join(", ", abnormalPlayerUids.Select(GetPlayerDisplayName)), expectedWaitCount);
+            _logger.LogInformation("[联机] 已设置服务端指令的统一等待点: {SyncPointId}, 异常玩家=[{AbnormalPlayers}], 预期人数={ExpectedCount}, 我是否需要移动={NeedMove}", 
+                syncPointId, string.Join(", ", abnormalPlayerUids.Select(GetPlayerDisplayName)), expectedWaitCount, needToMoveToNewWaitPoint);
             
             // 同步到 SyncBarrier，确保 PathExecutor 能检测到异常等待点
             _barrier.RecordWaitPointReport(routeId, syncPointId, GetCurrentWorldRound());
@@ -1193,6 +1239,34 @@ public class MultiplayerCoordinator : IAsyncDisposable
         {
             _logger.LogError(ex, "[联机] 处理统一等待点广播异常");
         }
+    }
+    
+    /// <summary>
+    /// 从同步点ID中提取路线索引
+    /// 格式：{routeId}_tp_{listIdx}_{wpIdx} 或 {fileName}_{routeId}_tp_{listIdx}_{wpIdx}
+    /// </summary>
+    private int ExtractRouteIndexFromSyncPoint(string syncPointId)
+    {
+        if (string.IsNullOrEmpty(syncPointId)) return -1;
+        
+        // 查找 _tp_ 标记
+        int tpIndex = syncPointId.IndexOf("_tp_");
+        if (tpIndex < 0) return -1;
+        
+        // _tp_ 前面的部分可能包含路线ID
+        string beforeTp = syncPointId.Substring(0, tpIndex);
+        
+        // 尝试解析最后一个数字作为路线索引
+        var parts = beforeTp.Split('_');
+        for (int i = parts.Length - 1; i >= 0; i--)
+        {
+            if (int.TryParse(parts[i], out int routeIndex))
+            {
+                return routeIndex;
+            }
+        }
+        
+        return -1;
     }
     
     /// <summary>
