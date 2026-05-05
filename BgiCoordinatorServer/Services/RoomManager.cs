@@ -191,6 +191,19 @@ public class RoomManager
     /// <summary>记录到达，当房间内所有在线成员均到达时返回 true</summary>
     public bool RecordArrival(string roomCode, string syncPointId, string connectionId)
     {
+        return RecordArrival(roomCode, syncPointId, connectionId, 0);
+    }
+
+    /// <summary>
+    /// 记录到达，当指定数量的玩家到达时返回 true
+    /// </summary>
+    /// <param name="roomCode">房间码</param>
+    /// <param name="syncPointId">同步点ID</param>
+    /// <param name="connectionId">连接ID</param>
+    /// <param name="expectedCount">预期到达人数，0表示使用房间总人数</param>
+    /// <returns>是否已达到预期人数</returns>
+    public bool RecordArrival(string roomCode, string syncPointId, string connectionId, int expectedCount)
+    {
         if (!_rooms.TryGetValue(roomCode, out var room))
             return false;
 
@@ -203,6 +216,14 @@ public class RoomManager
             }
 
             arrivals.Add(connectionId);
+            
+            // 如果指定了预期人数，使用指定人数判断
+            if (expectedCount > 0)
+            {
+                return arrivals.Count >= expectedCount;
+            }
+            
+            // 否则使用原有的"所有在线成员"判断
             return AllOnlineMembersReported(room, arrivals);
         }
     }

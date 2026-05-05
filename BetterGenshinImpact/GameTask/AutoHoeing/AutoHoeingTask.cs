@@ -76,7 +76,26 @@ public class AutoHoeingTask : ISoloTask
     
     private bool _teamAlreadySwitched = false;
     private bool _worldPermissionSet = false;
-    
+
+    /// <summary>
+    /// 隐藏服务器地址的前半部分（隐私保护）
+    /// </summary>
+    private static string MaskServerUrl(string? url)
+    {
+        if (string.IsNullOrEmpty(url)) return url ?? "";
+        try
+        {
+            // 例如 http://121.4.78.52:8080/hub -> http://***:8080/hub
+            var uri = new Uri(url);
+            var maskedHost = "***";
+            return $"{uri.Scheme}://{maskedHost}:{uri.Port}{uri.PathAndQuery}";
+        }
+        catch
+        {
+            return url;
+        }
+    }
+
     /// <summary>
     /// <summary>
     /// 多世界模式下，保存第一任房主的配置，后续轮次都使用这个配置
@@ -235,7 +254,9 @@ public class AutoHoeingTask : ISoloTask
         try
         {
             var client = new CoordinatorClient();
-            _logger.LogInformation("[联机] 开始连接协调服务器: {Url}", _config.CoordinatorServerUrl);
+            // 隐藏服务器地址前半部分
+            var maskedUrl = MaskServerUrl(_config.CoordinatorServerUrl);
+            _logger.LogInformation("[联机] 开始连接协调服务器: {Url}", maskedUrl);
             var connected = await client.ConnectAsync(_config.CoordinatorServerUrl, _ct);
             if (!connected)
             {
@@ -2193,7 +2214,7 @@ public class AutoHoeingTask : ISoloTask
                                 // 获取路线ID
                                 string routeId = currentRouteIndex.ToString();
                                 // 获取下一个同步点（优先选择"传送必同步"的同步点）
-                                string nextSyncPointId = await GetNextSyncPointForWaitPointAsync(currentRouteIndex);
+                                string nextSyncPointId = await GetNextSyncPointForWaitPointAsync(currentRouteIndex, groupRoutes);
                                 
                                 if (!string.IsNullOrEmpty(nextSyncPointId))
                                 {
@@ -2776,16 +2797,17 @@ public class AutoHoeingTask : ISoloTask
     /// <summary>
     /// 获取下一个同步点用于等待点上报（skip-route-wait-point-report 修复）
     /// 优先选择"传送必同步"的同步点
+    /// 使用实际执行的路线列表（groupRoutes）而非配置的路线列表
     /// </summary>
-    private async Task<string> GetNextSyncPointForWaitPointAsync(int currentRouteIndex)
+    private async Task<string> GetNextSyncPointForWaitPointAsync(int currentRouteIndex, List<RouteInfo> actualRoutes)
     {
         try
         {
             // 获取下一个路线的索引
             int nextRouteIndex = currentRouteIndex + 1;
             
-            // 获取当前路线列表
-            var routes = LoadRoutesBasedOnConfig();
+            // 使用实际执行的路线列表
+            var routes = actualRoutes;
             if (nextRouteIndex >= routes.Count)
             {
                 _logger.LogWarning("[联机] 下一个路线索引 {NextIndex} 超出范围（总路线数: {Total}）", 

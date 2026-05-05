@@ -53,22 +53,36 @@ public class SyncBarrier
 
     public async Task<bool> WaitAsync(string syncPointId, CancellationToken ct)
     {
-        _logger.LogInformation("[SyncBarrier] 开始等待集合点: {SyncId}，超时={Timeout}s", syncPointId, _timeout.TotalSeconds);
+        return await WaitAsync(syncPointId, 0, ct);
+    }
+
+    /// <summary>
+    /// 等待集合点同步
+    /// </summary>
+    /// <param name="syncPointId">同步点ID</param>
+    /// <param name="expectedCount">预期到达人数，0表示使用房间总人数</param>
+    /// <param name="ct">取消令牌</param>
+    /// <returns>true=正常同步完成，false=超时放行</returns>
+    public async Task<bool> WaitAsync(string syncPointId, int expectedCount, CancellationToken ct)
+    {
+        _logger.LogInformation("[SyncBarrier] 开始等待集合点: {SyncId}，超时={Timeout}s，预期人数={Expected}", 
+            syncPointId, _timeout.TotalSeconds, expectedCount > 0 ? expectedCount : "全部");
         
         // 检查是否有待处理的路线跳过信号（sync-point-route-skip-alignment 修复）
-        if (_routeSkippedSignalPending)
+        // 注意：如果是异常等待点，则不能被 RouteSkipped 信号放行
+        bool isAbnormalWaitingPoint = IsAbnormalWaitingPoint(syncPointId);
+        
+        if (_routeSkippedSignalPending && !isAbnormalWaitingPoint)
         {
             _routeSkippedSignalPending = false;
             _logger.LogInformation("[SyncBarrier] 检测到路线跳过信号，立即放行集合点: {SyncId}", syncPointId);
             return false;
         }
-        
-        // 检查是否有等待点上报需要跳过等待（skip-route-wait-point-report 修复）
-        if (ShouldSkipWaitForSyncPoint(syncPointId))
+        else if (isAbnormalWaitingPoint)
         {
-            _logger.LogInformation("[SyncBarrier] 同步点 {SyncId} 匹配等待点上报，只上报到达不等待", syncPointId);
-            await _client.ReportArrivalAsync(syncPointId);
-            return false;
+            // 异常等待点，清除 RouteSkipped 信号，确保正常等待
+            _routeSkippedSignalPending = false;
+            _logger.LogInformation("[SyncBarrier] 异常等待点 {SyncId}，清除 RouteSkipped 信号并正常等待", syncPointId);
         }
         
         var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -92,8 +106,9 @@ public class SyncBarrier
         _client.AllArrived += handler;
         try
         {
-            _logger.LogInformation("[SyncBarrier] 上报到达集合点: {SyncId}，当前房间人数={RoomCount}", syncPointId, _client.CurrentRoomPlayerCount);
-            await _client.ReportArrivalAsync(syncPointId);
+            _logger.LogInformation("[SyncBarrier] 上报到达集合点: {SyncId}，当前房间人数={RoomCount}，预期人数={Expected}", 
+                syncPointId, _client.CurrentRoomPlayerCount, expectedCount > 0 ? expectedCount : "全部");
+            await _client.ReportArrivalAsync(syncPointId, expectedCount);
             _logger.LogInformation("[SyncBarrier] 上报完成，等待其他玩家...");
 
             using var reg = linkedCts.Token.Register(() =>
@@ -128,9 +143,49 @@ public class SyncBarrier
     }
 
     /// <summary>
+    /// 检查指定同步点是否是异常等待点
+    /// 异常等待点：有异常玩家在此点等待，不应被 RouteSkipped 信号放行
+    /// </summary>
+    public bool IsAbnormalWaitingPoint(string syncPointId)
+    {
+        try
+        {
+            // 清理过期等待点
+            var expiredKeys = _recentWaitPoints
+                .Where(kv => kv.Value.IsExpired(TimeSpan.FromMinutes(5)))
+                .Select(kv => kv.Key)
+                .ToList();
+            
+            foreach (var key in expiredKeys)
+            {
+                _recentWaitPoints.TryRemove(key, out _);
+            }
+            
+            // 检查是否有匹配的异常等待点（5分钟内有效）
+            foreach (var waitPoint in _recentWaitPoints.Values)
+            {
+                if (waitPoint.SyncPointId == syncPointId && !waitPoint.IsExpired(TimeSpan.FromMinutes(5)))
+                {
+                    _logger.LogDebug("[SyncBarrier] 找到异常等待点: {WaitPoint}", waitPoint);
+                    return true;
+                }
+            }
+            
+            return false;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[SyncBarrier] IsAbnormalWaitingPoint 异常");
+            return false;
+        }
+    }
+
+    /// <summary>
     /// 检查是否应该跳过指定同步点的等待（skip-route-wait-point-report 修复）
     /// 支持延迟到达的等待点上报（缓存最近N个）
+    /// 注意：此方法已弃用，保留用于向后兼容
     /// </summary>
+    [Obsolete("使用 IsAbnormalWaitingPoint 代替")]
     private bool ShouldSkipWaitForSyncPoint(string syncPointId)
     {
         try
@@ -206,21 +261,38 @@ public class SyncBarrier
     /// </summary>
     public async Task<bool> WaitExtraAsync(string syncPointId, int extraWaitSeconds, CancellationToken ct)
     {
-        _logger.LogInformation("[SyncBarrier] 开始额外等待: {SyncId}，额外超时={Extra}s", syncPointId, extraWaitSeconds);
+        return await WaitExtraAsync(syncPointId, extraWaitSeconds, 0, ct);
+    }
+
+    /// <summary>
+    /// 额外等待：标准超时后，为异常状态成员提供额外等待时间。
+    /// 监听 AllArrived 事件，超时后返回 false。
+    /// </summary>
+    /// <param name="syncPointId">同步点ID</param>
+    /// <param name="extraWaitSeconds">额外等待秒数</param>
+    /// <param name="expectedCount">预期到达人数，0表示使用房间总人数</param>
+    /// <param name="ct">取消令牌</param>
+    /// <returns>true=全员到达，false=超时放行</returns>
+    public async Task<bool> WaitExtraAsync(string syncPointId, int extraWaitSeconds, int expectedCount, CancellationToken ct)
+    {
+        _logger.LogInformation("[SyncBarrier] 开始额外等待: {SyncId}，额外超时={Extra}s，预期人数={Expected}", 
+            syncPointId, extraWaitSeconds, expectedCount > 0 ? expectedCount : "全部");
         
         // 检查是否有待处理的路线跳过信号（sync-point-route-skip-alignment 修复）
-        if (_routeSkippedSignalPending)
+        // 注意：如果是异常等待点，则不能被 RouteSkipped 信号放行
+        bool isAbnormalWaitingPoint = IsAbnormalWaitingPoint(syncPointId);
+        
+        if (_routeSkippedSignalPending && !isAbnormalWaitingPoint)
         {
             _routeSkippedSignalPending = false;
             _logger.LogInformation("[SyncBarrier] 额外等待期间检测到路线跳过信号，立即放行: {SyncId}", syncPointId);
             return false;
         }
-        
-        // 检查是否有等待点上报需要跳过等待（skip-route-wait-point-report 修复）
-        if (ShouldSkipWaitForSyncPoint(syncPointId))
+        else if (isAbnormalWaitingPoint)
         {
-            _logger.LogInformation("[SyncBarrier] 额外等待期间同步点 {SyncId} 匹配等待点上报，跳过额外等待", syncPointId);
-            return false;
+            // 异常等待点，清除 RouteSkipped 信号，确保正常等待
+            _routeSkippedSignalPending = false;
+            _logger.LogInformation("[SyncBarrier] 异常等待点 {SyncId}，清除 RouteSkipped 信号并正常额外等待", syncPointId);
         }
         
         // 跟踪当前等待的同步点
@@ -249,6 +321,9 @@ public class SyncBarrier
         _client.AllArrived += handler;
         try
         {
+            // 上报到达（带预期人数）
+            await _client.ReportArrivalAsync(syncPointId, expectedCount);
+            
             using var reg = linkedCts.Token.Register(() =>
             {
                 if (ct.IsCancellationRequested)

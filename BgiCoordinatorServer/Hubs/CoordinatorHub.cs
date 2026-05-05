@@ -130,11 +130,32 @@ public class CoordinatorHub : Hub
         if (roomCode == null) return;
 
         _roomManager.UpdateHeartbeat(Context.ConnectionId);
-        var allArrived = _roomManager.RecordArrival(roomCode, syncPointId, Context.ConnectionId);
+        var allArrived = _roomManager.RecordArrival(roomCode, syncPointId, Context.ConnectionId, 0);
 
         if (allArrived)
         {
             _logger.LogInformation("房间 {Code} 同步点 {SyncId} 全员到达", roomCode, syncPointId);
+            await Clients.Group(roomCode).SendAsync("AllArrived", syncPointId);
+        }
+    }
+
+    /// <summary>
+    /// 上报到达集合点（带预期人数），指定人数到达时广播 AllArrived
+    /// </summary>
+    /// <param name="syncPointId">同步点ID</param>
+    /// <param name="expectedCount">预期到达人数，0表示使用房间总人数</param>
+    public async Task ReportArrivalWithExpectedCount(string syncPointId, int expectedCount)
+    {
+        var (_, roomCode) = _roomManager.GetRoomByConnectionId(Context.ConnectionId);
+        if (roomCode == null) return;
+
+        _roomManager.UpdateHeartbeat(Context.ConnectionId);
+        var allArrived = _roomManager.RecordArrival(roomCode, syncPointId, Context.ConnectionId, expectedCount);
+
+        if (allArrived)
+        {
+            _logger.LogInformation("房间 {Code} 同步点 {SyncId} 到达人数达到预期 {Expected}，触发 AllArrived", 
+                roomCode, syncPointId, expectedCount);
             await Clients.Group(roomCode).SendAsync("AllArrived", syncPointId);
         }
     }
@@ -484,7 +505,7 @@ public class CoordinatorHub : Hub
                 return; // 忽略跨轮上报
             }
             
-            // 存储等待点（用于协调）
+            // 存储等待点（用于记录，不用于协调）
             room.WaitPoints[playerUid] = new WaitPointReport
             {
                 PlayerUid = playerUid,
@@ -492,32 +513,19 @@ public class CoordinatorHub : Hub
                 SyncPointId = syncPointId,
                 WorldRound = worldRound,
                 ReportedTime = DateTime.UtcNow,
-                ExpiryTime = DateTime.UtcNow.AddSeconds(30)
+                ExpiryTime = DateTime.UtcNow.AddSeconds(300) // 5分钟超时
             };
         }
         
         _logger.LogInformation("[WaitPointReport] 玩家 {Uid} 上报等待点：路线={Route}，同步点={Sync}，轮次={Round}，房间={Code}", 
             playerUid, routeId, syncPointId, worldRound, roomCode);
         
-        // 广播等待点上报给所有玩家
+        // 广播等待点上报给所有玩家（异常协调中心：只记录和广播，不协调）
         await Clients.Group(roomCode).SendAsync("WaitPointReported", 
             playerUid, routeId, syncPointId, worldRound, DateTime.UtcNow);
         
-        // 协调多个等待点（取最落后的）
-        var coordinatedPoint = CoordinateWaitPoints(room);
-        
-        // 如果协调出了统一等待点，也广播
-        if (coordinatedPoint != null)
-        {
-            room.CoordinatedWaitPoint = coordinatedPoint;
-            _logger.LogInformation("[WaitPointReport] 房间 {Code} 协调出统一等待点：路线={Route}，同步点={Sync}，对齐玩家={Players}", 
-                roomCode, coordinatedPoint.RouteId, coordinatedPoint.SyncPointId, 
-                string.Join(",", coordinatedPoint.AlignedPlayers));
-            
-            await Clients.Group(roomCode).SendAsync("WaitPointCoordinated",
-                coordinatedPoint.RouteId, coordinatedPoint.SyncPointId, 
-                coordinatedPoint.WorldRound, coordinatedPoint.AlignedPlayers);
-        }
+        // 异常协调中心：记录等待点，但不进行复杂协调
+        // 每个异常玩家在自己的同步点等待，客户端自行处理协调逻辑
     }
 
     /// <summary>
@@ -583,26 +591,13 @@ public class CoordinatorHub : Hub
         {
             room.CurrentWorldRound = newRound;
             room.WaitPoints.Clear(); // 清理所有等待点
-            room.CoordinatedWaitPoint = null; // 清理协调等待点
             _logger.LogInformation("[ResetForNewWorldRound] 房间{RoomCode}进入第{Round}轮，等待点已重置", roomCode, newRound);
         }
         
         return Task.CompletedTask;
     }
 
-    /// <summary>
-    /// 获取当前房间的协调等待点
-    /// </summary>
-    public Task<CoordinatedWaitPoint?> GetCoordinatedWaitPoint()
-    {
-        var (room, _) = _roomManager.GetRoomByConnectionId(Context.ConnectionId);
-        if (room == null) return Task.FromResult<CoordinatedWaitPoint?>(null);
-        
-        lock (room)
-        {
-            return Task.FromResult(room.CoordinatedWaitPoint?.Clone());
-        }
-    }
+
 
     public override async Task OnDisconnectedAsync(Exception? exception)
     {

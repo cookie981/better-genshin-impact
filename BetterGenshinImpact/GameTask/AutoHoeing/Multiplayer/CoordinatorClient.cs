@@ -46,6 +46,9 @@ public class CoordinatorClient : IAsyncDisposable
 
     private WorldStateMonitor? _worldStateMonitor;
 
+    // === 玩家名称缓存（用于日志显示）===
+    private readonly ConcurrentDictionary<string, string> _playerNameCache = new();
+
     public event Action<List<PlayerInfo>>? PlayerListUpdated;
     public event Action<string>? AllArrived;
     public event Action<string>? AllFightDone;
@@ -84,8 +87,65 @@ public class CoordinatorClient : IAsyncDisposable
 
     public WorldStateMonitor? WorldStateMonitor { get; set; }
 
+    /// <summary>
+    /// 隐藏服务器地址的前半部分（隐私保护）
+    /// </summary>
+    private static string MaskServerUrl(string url)
+    {
+        if (string.IsNullOrEmpty(url)) return url;
+        try
+        {
+            // 例如 http://121.4.78.52:8080/hub -> http://***:8080/hub
+            var uri = new Uri(url);
+            var maskedHost = "***";
+            return $"{uri.Scheme}://{maskedHost}:{uri.Port}{uri.PathAndQuery}";
+        }
+        catch
+        {
+            return url;
+        }
+    }
+
+    /// <summary>
+    /// 获取玩家显示名称（优先使用名称，找不到则显示 UID 前后各3位）
+    /// </summary>
+    private string GetPlayerDisplayName(string playerUid)
+    {
+        if (string.IsNullOrEmpty(playerUid)) return "未知玩家";
+        
+        // 先从缓存查找
+        if (_playerNameCache.TryGetValue(playerUid, out var name) && !string.IsNullOrEmpty(name))
+            return name;
+        
+        // 从当前玩家列表查找
+        var player = CurrentPlayerList.FirstOrDefault(p => p.PlayerUid == playerUid);
+        if (player != null && !string.IsNullOrEmpty(player.PlayerName))
+        {
+            _playerNameCache[playerUid] = player.PlayerName;
+            return player.PlayerName;
+        }
+        
+        // 找不到名称，显示 UID 前后各3位
+        if (playerUid.Length > 6)
+            return $"{playerUid[..3]}***{playerUid[^3..]}";
+        return playerUid;
+    }
+
+    /// <summary>
+    /// 更新玩家名称缓存
+    /// </summary>
+    private void UpdatePlayerNameCache(List<PlayerInfo> players)
+    {
+        foreach (var player in players)
+        {
+            if (!string.IsNullOrEmpty(player.PlayerUid) && !string.IsNullOrEmpty(player.PlayerName))
+                _playerNameCache[player.PlayerUid] = player.PlayerName;
+        }
+    }
+
     public async Task<bool> ConnectAsync(string serverUrl, CancellationToken ct)
     {
+        var maskedUrl = MaskServerUrl(serverUrl);
         try
         {
             _connection = new HubConnectionBuilder()
@@ -99,6 +159,9 @@ public class CoordinatorClient : IAsyncDisposable
                     if (list.Count > 0)
                         HostPlayerUid = list[0].PlayerUid;
                     CurrentPlayerList = new List<PlayerInfo>(list);
+
+                    // 更新玩家名称缓存
+                    UpdatePlayerNameCache(list);
 
                     // 清理不在玩家列表中的过期状态条目（需求 7）
                     var activeUids = list.Select(p => p.PlayerUid).ToHashSet();
@@ -182,7 +245,7 @@ public class CoordinatorClient : IAsyncDisposable
                 (playerUid, routeIndex) =>
                 {
                     _memberProgressCache[playerUid] = routeIndex;
-                    _logger.LogDebug("[联机] 成员路线进度缓存更新: {Uid} → {Index}", playerUid, routeIndex);
+                    _logger.LogDebug("[联机] 成员路线进度缓存更新: {PlayerName} → {Index}", GetPlayerDisplayName(playerUid), routeIndex);
                 });
 
             // 等待点上报（skip-route-wait-point-report 修复）
@@ -195,20 +258,20 @@ public class CoordinatorClient : IAsyncDisposable
                     // 验证参数
                     if (string.IsNullOrEmpty(routeId) || string.IsNullOrEmpty(syncPointId))
                     {
-                        _logger.LogWarning("[联机] 收到无效的等待点上报: Player={PlayerUid}, Route={RouteId}, SyncPoint={SyncPointId}", 
-                            playerUid, routeId, syncPointId);
+                        _logger.LogWarning("[联机] 收到无效的等待点上报: Player={PlayerName}, Route={RouteId}, SyncPoint={SyncPointId}", 
+                            GetPlayerDisplayName(playerUid), routeId, syncPointId);
                         return;
                     }
                     
                     WaitPointReported?.Invoke(playerUid, routeId, syncPointId, worldRound, timestamp);
-                    _logger.LogInformation("[联机] 收到等待点上报: Player={PlayerUid}, Route={RouteId}, SyncPoint={SyncPointId}, Round={WorldRound}", 
-                        playerUid, routeId, syncPointId, worldRound);
+                    _logger.LogInformation("[联机] 收到等待点上报: Player={PlayerName}, Route={RouteId}, SyncPoint={SyncPointId}, Round={WorldRound}", 
+                        GetPlayerDisplayName(playerUid), routeId, syncPointId, worldRound);
                 });
 
             _connection.Closed += OnConnectionClosed;
 
             await _connection.StartAsync(ct);
-            _logger.LogInformation("CoordinatorClient 已连接到 {Url}", serverUrl);
+            _logger.LogInformation("CoordinatorClient 已连接到 {Url}", maskedUrl);
 
             // 启动心跳定时器，每 5 秒发送一次
             _heartbeatTimer = new Timer(async _ =>
@@ -221,7 +284,7 @@ public class CoordinatorClient : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "CoordinatorClient 连接失败: {Url}", serverUrl);
+            _logger.LogError(ex, "CoordinatorClient 连接失败: {Url}", maskedUrl);
             return false;
         }
     }
@@ -403,6 +466,25 @@ public class CoordinatorClient : IAsyncDisposable
         try
         {
             await _connection.InvokeAsync("ReportArrival", syncPointId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "ReportArrivalAsync 失败: {SyncPointId}", syncPointId);
+        }
+    }
+
+    /// <summary>
+    /// 上报到达集合点（带预期人数）
+    /// </summary>
+    /// <param name="syncPointId">同步点ID</param>
+    /// <param name="expectedCount">预期到达人数，0表示使用房间总人数</param>
+    public async Task ReportArrivalAsync(string syncPointId, int expectedCount)
+    {
+        if (_connection == null) return;
+        try
+        {
+            await _connection.InvokeAsync("ReportArrivalWithExpectedCount", syncPointId, expectedCount);
+            _logger.LogInformation("[联机] 上报到达: {SyncId}，预期人数={Expected}", syncPointId, expectedCount);
         }
         catch (Exception ex)
         {
