@@ -1244,6 +1244,7 @@ public class MultiplayerCoordinator : IAsyncDisposable
     /// <summary>
     /// 从同步点ID中提取路线索引
     /// 格式：{routeId}_tp_{listIdx}_{wpIdx} 或 {fileName}_{routeId}_tp_{listIdx}_{wpIdx}
+    /// 或 D023须弥降诸魔山神像.json_tp_0_0 (文件名包含 D+数字 前缀)
     /// </summary>
     private int ExtractRouteIndexFromSyncPoint(string syncPointId)
     {
@@ -1253,16 +1254,44 @@ public class MultiplayerCoordinator : IAsyncDisposable
         int tpIndex = syncPointId.IndexOf("_tp_");
         if (tpIndex < 0) return -1;
         
-        // _tp_ 前面的部分可能包含路线ID
+        // _tp_ 前面的部分是文件名
+        // 格式可能是：
+        // - "2_tp_0_0" (纯数字)
+        // - "fileName_2_tp_0_0" (文件名_数字)
+        // - "D023须弥降诸魔山神像.json_tp_0_0" (文件名包含 D+数字 前缀)
         string beforeTp = syncPointId.Substring(0, tpIndex);
         
-        // 尝试解析最后一个数字作为路线索引
+        // 尝试解析最后一个下划线分隔的部分作为数字
         var parts = beforeTp.Split('_');
         for (int i = parts.Length - 1; i >= 0; i--)
         {
             if (int.TryParse(parts[i], out int routeIndex))
             {
                 return routeIndex;
+            }
+        }
+        
+        // 如果上述方法失败，尝试从文件名开头提取 D+数字 格式
+        // 例如 "D023须弥降诸魔山神像.json" -> 23
+        var fileName = beforeTp;
+        if (fileName.StartsWith("D") && fileName.Length > 1)
+        {
+            // 提取 D 后面的数字
+            int digitStart = 1;
+            int digitEnd = digitStart;
+            while (digitEnd < fileName.Length && char.IsDigit(fileName[digitEnd]))
+            {
+                digitEnd++;
+            }
+            if (digitEnd > digitStart)
+            {
+                var numberStr = fileName.Substring(digitStart, digitEnd - digitStart);
+                if (int.TryParse(numberStr, out int routeIndexFromFileName))
+                {
+                    _logger.LogDebug("[联机] 从文件名前缀提取路线索引: {SyncPointId} -> {RouteIndex}", 
+                        syncPointId, routeIndexFromFileName);
+                    return routeIndexFromFileName;
+                }
             }
         }
         
