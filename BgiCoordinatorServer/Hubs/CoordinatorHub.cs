@@ -561,6 +561,9 @@ public class CoordinatorHub : Hub
                 player.WaitPointId = null;
             }
             
+            // 清理联机锄地异常同步状态（multiplayer-abnormal-sync-server 需求 REQ-6.1）
+            room.AbnormalPlayerInfos.Clear();
+            
             _logger.LogInformation("[ResetForNewWorldRound] 房间{RoomCode}进入第{Round}轮，等待点、异常状态已重置", roomCode, newRound);
         }
         
@@ -820,22 +823,41 @@ public class CoordinatorHub : Hub
     }
 
     /// <summary>
-    /// 接收玩家异常通知并广播给房间内其他玩家
+    /// 接收玩家异常通知并广播给房间内其他玩家（multiplayer-abnormal-sync-server spec）
+    /// Validates: Requirements REQ-1.1, REQ-1.2, REQ-1.3, REQ-1.4, REQ-3.2, REQ-3.3
     /// </summary>
     public async Task PlayerAnomalyNotify(string playerUid, int routeIndex, bool passedSyncPoint)
     {
         var (room, roomCode) = _roomManager.GetRoomByConnectionId(Context.ConnectionId);
         if (room == null || roomCode == null) return;
 
-        _logger.LogInformation("[PlayerAnomalyNotify] 房间={RoomCode}, 玩家={PlayerUid}, 路线={RouteIndex}, 已过同步点={Passed}",
-            roomCode, playerUid, routeIndex, passedSyncPoint);
+        // 计算目标汇合线路（需求 REQ-1.3, REQ-1.4）
+        int targetRouteIndex = passedSyncPoint ? routeIndex + 1 : routeIndex;
 
-        // 广播给房间内所有玩家（发送方也会收到，但客户端会过滤自己）
+        _logger.LogInformation(
+            "[PlayerAnomalyNotify] 房间={RoomCode}, 玩家={PlayerUid}, 线路={RouteIndex}, 已过同步点={Passed}, 目标汇合线路={Target}",
+            roomCode, playerUid, routeIndex, passedSyncPoint, targetRouteIndex);
+
+        // 更新服务器端异常状态（需求 REQ-3.2, REQ-3.3）
+        lock (room)
+        {
+            room.AbnormalPlayerInfos[playerUid] = new AbnormalPlayerInfo
+            {
+                PlayerUid = playerUid,
+                RouteIndex = routeIndex,
+                PassedSyncPoint = passedSyncPoint,
+                TargetRouteIndex = targetRouteIndex,
+                ReportTime = DateTime.UtcNow
+            };
+        }
+
+        // 广播给房间内所有玩家（发送方也会收到，但客户端会过滤自己）（需求 REQ-1.2）
         await Clients.Group(roomCode).SendAsync("PlayerAnomalyNotify", playerUid, routeIndex, passedSyncPoint);
     }
 
     /// <summary>
-    /// 接收玩家异常恢复通知并广播给房间内其他玩家
+    /// 接收玩家异常恢复通知并广播给房间内其他玩家（multiplayer-abnormal-sync-server spec）
+    /// Validates: Requirements REQ-2.1, REQ-2.2, REQ-3.4
     /// </summary>
     public async Task PlayerAnomalyRecovered(string playerUid)
     {
@@ -844,7 +866,13 @@ public class CoordinatorHub : Hub
 
         _logger.LogInformation("[PlayerAnomalyRecovered] 房间={RoomCode}, 玩家={PlayerUid}", roomCode, playerUid);
 
-        // 广播给房间内所有玩家
+        // 从服务器端异常状态中移除（需求 REQ-3.4）
+        lock (room)
+        {
+            room.AbnormalPlayerInfos.Remove(playerUid);
+        }
+
+        // 广播给房间内所有玩家（需求 REQ-2.2）
         await Clients.Group(roomCode).SendAsync("PlayerAnomalyRecovered", playerUid);
     }
 
@@ -958,5 +986,49 @@ public class CoordinatorHub : Hub
         return [.. diffFiles];
     }
 
+    // === 缺少的辅助方法（暂时添加存根以修复编译错误）===
+    // TODO: 这些方法应该在 multiplayer-sync-refactor 清理计划中删除或正确实现
 
+    /// <summary>
+    /// 计算最终统一等待点（多异常玩家场景）
+    /// </summary>
+    private string CalculateFinalUnifiedWaitPoint(Room room, string currentWaitPoint, string routeId, string playerUid)
+    {
+        // 简单实现：返回当前等待点
+        // 完整实现应根据路线索引选择最远的等待点
+        return currentWaitPoint;
+    }
+
+    /// <summary>
+    /// 计算预期等待人数（所有在线玩家）
+    /// </summary>
+    private int CalculateExpectedWaitCountAll(Room room)
+    {
+        lock (room)
+        {
+            return room.Players.Count(p =>
+                DateTime.UtcNow - p.LastHeartbeat < TimeSpan.FromMinutes(2));
+        }
+    }
+
+    /// <summary>
+    /// 从同步点ID中提取路线ID
+    /// </summary>
+    private string ExtractRouteIdFromSyncPoint(string syncPointId)
+    {
+        if (string.IsNullOrEmpty(syncPointId))
+            return "";
+
+        // 格式：{routeId}_tp_{listIdx}_{wpIdx} 或 {fileName}_{routeId}_tp_{listIdx}_{wpIdx}
+        var parts = syncPointId.Split('_');
+        var tpIndex = Array.IndexOf(parts, "tp");
+
+        if (tpIndex > 0)
+        {
+            // 路线ID在 _tp_ 之前
+            return string.Join("_", parts.Take(tpIndex));
+        }
+
+        return syncPointId;
+    }
 }

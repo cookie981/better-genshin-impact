@@ -646,4 +646,65 @@ public class RoomManager
             yield return (room, roomCode);
         }
     }
+
+    // === 联机锄地异常同步机制方法（multiplayer-abnormal-sync-server spec）===
+    // Validates: Requirements REQ-4, REQ-5, REQ-6
+
+    /// <summary>
+    /// 计算指定线路同步点的有效等待人数
+    /// </summary>
+    /// <param name="roomCode">房间码</param>
+    /// <param name="currentRouteIndex">当前线路索引</param>
+    /// <returns>有效等待人数</returns>
+    public int GetEffectiveWaitCount(string roomCode, int currentRouteIndex)
+    {
+        var room = GetRoom(roomCode);
+        if (room == null) return 0;
+
+        lock (room)
+        {
+            // 在线玩家数（2分钟内有心跳）
+            int onlineCount = room.Players.Count(p =>
+                DateTime.UtcNow - p.LastHeartbeat < TimeSpan.FromMinutes(2));
+
+            // 在其他线路等待的异常玩家数
+            int abnormalInOtherRoutes = room.AbnormalPlayerInfos.Values
+                .Count(a => a.TargetRouteIndex != currentRouteIndex);
+
+            return Math.Max(1, onlineCount - abnormalInOtherRoutes);
+        }
+    }
+
+    /// <summary>
+    /// 获取房间的同步超时秒数
+    /// </summary>
+    /// <param name="roomCode">房间码</param>
+    /// <returns>超时秒数（无异常=60，有异常=300）</returns>
+    public int GetSyncTimeoutSeconds(string roomCode)
+    {
+        var room = GetRoom(roomCode);
+        if (room == null) return 60;
+
+        lock (room)
+        {
+            return room.AbnormalPlayerInfos.Count > 0 ? 300 : 60;
+        }
+    }
+
+    /// <summary>
+    /// 重置房间的异常状态（多轮世界新轮次开始时调用）
+    /// </summary>
+    /// <param name="roomCode">房间码</param>
+    public void ResetAbnormalStates(string roomCode)
+    {
+        var room = GetRoom(roomCode);
+        if (room == null) return;
+
+        lock (room)
+        {
+            room.AbnormalPlayerInfos.Clear();
+        }
+
+        _logger?.LogInformation("[ResetAbnormalStates] 房间 {RoomCode} 异常状态已重置", roomCode);
+    }
 }

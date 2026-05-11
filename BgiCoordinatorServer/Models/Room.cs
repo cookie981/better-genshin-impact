@@ -75,6 +75,15 @@ public class Room
     /// </summary>
     public RealignProcess? CurrentRealignProcess { get; set; }
     
+    // === 联机锄地异常同步机制字段（multiplayer-abnormal-sync-server spec）===
+    // Validates: Requirements REQ-3.1
+
+    /// <summary>
+    /// 异常玩家状态：playerUid → AbnormalPlayerInfo
+    /// 用于联机锄地场景下追踪异常玩家状态
+    /// </summary>
+    public Dictionary<string, AbnormalPlayerInfo> AbnormalPlayerInfos { get; set; } = new();
+    
     // === 强制线路同步机制字段（multiplayer-route-enforcement spec）===
     
     /// <summary>
