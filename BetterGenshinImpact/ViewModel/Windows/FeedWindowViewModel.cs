@@ -29,6 +29,18 @@ public partial class FeedWindowViewModel : ViewModel
     public FeedWindowViewModel()
     {
         IsDisplayBtnGetLiveCodes = GamePreviewLiveDateCalculator.IsWithinPreviewRange(DateTime.Now);
+        AutoRedeemCodeCheckEnabled = TaskContext.Instance().Config.AutoRedeemCodeConfig.AutoRedeemCodeCheckEnabled;
+    }
+
+    /// <summary>
+    /// 是否在一条龙启动时自动检查兑换码
+    /// </summary>
+    [ObservableProperty]
+    private bool _autoRedeemCodeCheckEnabled;
+
+    partial void OnAutoRedeemCodeCheckEnabledChanged(bool value)
+    {
+        TaskContext.Instance().Config.AutoRedeemCodeConfig.AutoRedeemCodeCheckEnabled = value;
     }
 
     [RelayCommand]
@@ -117,6 +129,13 @@ public partial class FeedWindowViewModel : ViewModel
         {
             await new TaskRunner().RunSoloTaskAsync(new UseRedemptionCodeTask(item.Codes));
         }
+    }
+
+    [RelayCommand]
+    private void ResetCheckStatus()
+    {
+        TaskContext.Instance().Config.AutoRedeemCodeConfig.LastRedeemCodeCheckDates.Clear();
+        Toast.Success("已重置检查状态，下次一条龙将重新检查兑换码");
     }
 
     public async Task LoadRemoteDataAsync()

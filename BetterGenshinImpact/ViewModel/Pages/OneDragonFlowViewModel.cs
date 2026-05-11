@@ -73,6 +73,7 @@ using BetterGenshinImpact.Service.Notification.Model.Enum;
 using Microsoft.Extensions.Localization;
 using Microsoft.Extensions.Logging;
 using static BetterGenshinImpact.GameTask.Common.TaskControl;
+using BetterGenshinImpact.GameTask.UseRedeemCode;
 
 
 namespace BetterGenshinImpact.ViewModel.Pages;
@@ -93,6 +94,7 @@ public partial class OneDragonFlowViewModel : ViewModel
     private ScriptControlViewModel _scriptControlViewModel;
     
     private readonly BlessingOfTheWelkinMoonTask _blessingOfTheWelkinMoonTask = new();
+    private readonly AutoRedeemCodeChecker _autoRedeemCodeChecker = new();
 
     [ObservableProperty] private ObservableCollection<OneDragonTaskItem> _taskList =
     [
@@ -2217,11 +2219,11 @@ public partial class OneDragonFlowViewModel : ViewModel
     public async Task OnOneKeyExecute()
     {
         CancellationContext.Instance.Set();
-        
+
         if (!_continuousExecutionMark)
-        {  
+        {
             _lastUid = "";
-            InitConfigList();//初始化配置，保证当前选择的配置是最新的 
+            InitConfigList();//初始化配置，保证当前选择的配置是最新的
         }
         if (string.IsNullOrEmpty(SelectedConfig.Name) || string.IsNullOrEmpty(Config.SelectedOneDragonFlowConfigName))
         {
@@ -2230,7 +2232,7 @@ public partial class OneDragonFlowViewModel : ViewModel
         }
         
         ReadScriptGroup();
-        
+
         var taskListCopy = new List<OneDragonTaskItem>(TaskList);//避免执行过程中修改TaskList
         
         if (SelectedConfig.NextTaskIndex > 0)
@@ -2427,6 +2429,23 @@ public partial class OneDragonFlowViewModel : ViewModel
         }
        
         _lastUid = SelectedConfig.GenshinUid;//记录上一次切换的UID
+        
+        using var cancellationTokenSource33 = new CancellationTokenSource();
+        await new TaskRunner().RunCurrentAsync(async () =>
+        {
+            // 在一条龙启动前检查是否需要自动兑换兑换码（无论是一条龙任务还是配置组任务都需要检查）
+            await CheckAndRedeemCodeIfEnabledAsync(cancellationTokenSource33.Token);
+        });
+        // 如果任务已经被取消，中断所有任务
+        if (CancellationContext.Instance.Cts.IsCancellationRequested)
+        {
+            _continuousExecutionMark = false;// 标记连续执行结束
+            _executionSuccessCount = 0;// 重置连续执行成功次数
+            _finishMark = false;
+            _logger.LogInformation("连续一条龙：任务结束");
+            Notify.Event(NotificationEvent.DragonEnd).Success("连续一条龙：任务结束");
+            return; // 后续的检查任务也不执行
+        }
         
         if (taskListCopy.Count(t => t.IsEnabled) == 0)
         {
@@ -2690,6 +2709,23 @@ public partial class OneDragonFlowViewModel : ViewModel
         }
         Toast.Success("清除从此执行标记完成");
         SaveConfig();
+    }
+
+    /// <summary>
+    /// 检查并自动兑换兑换码（如果启用）
+    /// </summary>
+    private async Task CheckAndRedeemCodeIfEnabledAsync(CancellationToken cts = default)
+    {
+        try
+        {
+            // 使用配置的UID，如果没有配置则使用默认值 "default"
+            var uid = string.IsNullOrEmpty(SelectedConfig?.GenshinUid) ? "default" : SelectedConfig!.GenshinUid;
+            await _autoRedeemCodeChecker.CheckAndRedeemIfNeeded(uid, cts);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "自动兑换码检查失败，不阻塞一条龙执行");
+        }
     }
 
     //UID验证

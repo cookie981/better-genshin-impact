@@ -11,6 +11,7 @@ using BetterGenshinImpact.GameTask.Common.Job;
 using BetterGenshinImpact.GameTask.UseRedeemCode.Model;
 using BetterGenshinImpact.Helpers;
 using BetterGenshinImpact.Helpers.Extensions;
+using BetterGenshinImpact.Helpers.Extensions;
 using Microsoft.Extensions.Logging;
 using Vanara.PInvoke;
 using Rect = OpenCvSharp.Rect;
@@ -114,6 +115,7 @@ public class UseRedemptionCodeTask : ISoloTask
         if (list.Count > 0)
         {
             _logger.LogInformation("兑换码 {Code} 兑换成功", redeemCode.Code);
+            RedeemCodeCache.MarkAsUsed(redeemCode.Code);
             // 点击确认
             await page.Locator(ElementAssets.Instance.BtnBlackConfirm).Click();
             await page.Wait(5100);
@@ -121,6 +123,7 @@ public class UseRedemptionCodeTask : ISoloTask
         else
         {
             _logger.LogWarning("兑换码 {Code} 兑换失败，可能是过期、错误或已被使用", redeemCode.Code);
+            RedeemCodeCache.MarkAsFailed(redeemCode.Code);
             // 点击清除
             await page.GetByText("清除").WithRoi(captureRect.CutRight(0.5)).Click();
         }
