@@ -38,6 +38,11 @@ public class MultiplayerCoordinator : IAsyncDisposable
     public bool IsExitTriggered { get; private set; }
     public bool IsAbortRequested { get; private set; }
     public int CurrentRouteIndex => _client.CurrentRouteIndex;
+    
+    /// <summary>
+    /// 当前玩家 UID
+    /// </summary>
+    public string PlayerUid => _client.PlayerUid;
 
     // === 连续超时控制（需求 5）===
     private int _consecutiveSyncTimeoutCount;

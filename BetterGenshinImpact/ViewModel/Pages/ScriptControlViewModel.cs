@@ -2114,7 +2114,6 @@ public partial class ScriptControlViewModel : ViewModel
         var returnToFightCheck = new System.Windows.Controls.CheckBox { Content = "战斗后走回战斗点", IsChecked = GetBool("returnToFightPointAfterBattle", globalCfg.ReturnToFightPointAfterBattle) };
         var returnStaySecondsBox = new TextBox { Text = GetInt("returnToFightPointStaySeconds", globalCfg.ReturnToFightPointStaySeconds).ToString(), PlaceholderText = "秒" };
         var fightTimeoutBox = new TextBox { Text = GetInt("fightTimeoutSeconds", globalCfg.FightTimeoutSeconds).ToString(), PlaceholderText = "秒，默认120" };
-        var syncAtEveryTeleportCheck = new System.Windows.Controls.CheckBox { Content = "传送点必同步（所有传送点都作为同步等待点）", IsChecked = GetBool("syncAtEveryTeleport", globalCfg.SyncAtEveryTeleport) };
         returnStaySecondsBox.IsEnabled = returnToFightCheck.IsChecked ?? false;
         returnToFightCheck.Checked += (_, _) => returnStaySecondsBox.IsEnabled = true;
         returnToFightCheck.Unchecked += (_, _) => returnStaySecondsBox.IsEnabled = false;
@@ -2277,9 +2276,6 @@ public partial class ScriptControlViewModel : ViewModel
         returnRow.Children.Add(returnStaySecondsBox);
         returnRow.Children.Add(new TextBlock { Text = " 秒", FontSize = 12, Foreground = SystemColors.GrayTextBrush, VerticalAlignment = VerticalAlignment.Center });
         hostPanel.Children.Add(returnRow);
-
-        // 传送点必同步
-        hostPanel.Children.Add(syncAtEveryTeleportCheck);
 
         // 分组4：战斗配置
         hostPanel.Children.Add(MakeGroupHeader("战斗配置"));
@@ -2506,7 +2502,6 @@ public partial class ScriptControlViewModel : ViewModel
                     settings["returnToFightPointAfterBattle"] = returnToFightCheck.IsChecked ?? false;
                     if (int.TryParse(returnStaySecondsBox.Text, out var rss)) settings["returnToFightPointStaySeconds"] = rss;
                     if (int.TryParse(fightTimeoutBox.Text, out var fts)) settings["fightTimeoutSeconds"] = fts;
-                    settings["syncAtEveryTeleport"] = syncAtEveryTeleportCheck.IsChecked ?? false;
                     settings["debugMode"] = debugModeCheck.IsChecked ?? false;
                     settings["useFixedDebugRoutes"] = useFixedRoutesCheck.IsChecked ?? false;
                     settings["fixedDebugRoutePath"] = fixedRoutePathBox.Text;

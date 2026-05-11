@@ -340,12 +340,6 @@ public partial class AutoHoeingConfig : ObservableObject
     private int? _maxRouteLag = 2;
 
     /// <summary>
-    /// 传送点必同步：启用后所有传送点都作为同步等待点，与战斗点前的同步点同时存在
-    /// </summary>
-    [ObservableProperty]
-    private bool _syncAtEveryTeleport = false;
-
-    /// <summary>
     /// 万叶玩家序号（0=不指定，1-4=对应玩家序号）
     /// </summary>
     [ObservableProperty]

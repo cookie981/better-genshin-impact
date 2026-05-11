@@ -138,7 +138,6 @@ public class AutoHoeingTask : ISoloTask
             _config.MultiWorldCount = 2;
             _config.FightExtraWaitSeconds = 60;
             _config.RejoinMaxWaitSeconds = 300;
-            _config.SyncAtEveryTeleport = false;
 
             ApplySettingsOverride();
         }
@@ -181,7 +180,6 @@ public class AutoHoeingTask : ISoloTask
         {
             // 清除联机战斗超时覆盖值
             PathingConditionConfig.MultiplayerFightTimeoutOverride = null;
-            PathingConditionConfig.MultiplayerSyncAtEveryTeleportOverride = null;
             PathExecutor.CurrentWorldStateMonitor = null;
 
             // 房主兜底：确保关闭房间通知已发送
@@ -447,7 +445,6 @@ public class AutoHoeingTask : ISoloTask
                     FightTimeoutSeconds = _config.FightTimeoutSeconds,
                     FightExtraWaitSeconds = _config.FightExtraWaitSeconds,
                     RejoinMaxWaitSeconds = _config.RejoinMaxWaitSeconds,
-                    SyncAtEveryTeleport = _config.SyncAtEveryTeleport,
                 };
                 
                 // 房主上传配置，带重试机制（最多3次）
@@ -500,7 +497,6 @@ public class AutoHoeingTask : ISoloTask
 
             // 联机模式：设置战斗超时覆盖值（不修改原始配置，通过 PathingConditionConfig 传递给 AutoFightHandler）
             PathingConditionConfig.MultiplayerFightTimeoutOverride = _config.FightTimeoutSeconds;
-            PathingConditionConfig.MultiplayerSyncAtEveryTeleportOverride = _config.SyncAtEveryTeleport;
 
             // 打印所有房主同步的参数
             _logger.LogInformation("[联机] ===== 当前联机参数（房主同步）=====");
@@ -512,8 +508,8 @@ public class AutoHoeingTask : ISoloTask
                 _config.ReturnToFightPointAfterBattle, _config.ReturnToFightPointStaySeconds, _config.DebugMode);
             _logger.LogInformation("[联机] 组队超时={PartyTimeout}s，多世界={MultiWorld}（{Rounds}轮），内置线路={Route}",
                 _config.PartyTimeoutSeconds, _config.MultiWorldEnabled, _config.MultiWorldCount, _config.SelectedBuiltinRoute);
-            _logger.LogInformation("[联机] 战斗额外等待={FightExtra}s，重新加入最大等待={RejoinMax}s，传送点必同步={SyncTp}",
-                _config.FightExtraWaitSeconds, _config.RejoinMaxWaitSeconds, _config.SyncAtEveryTeleport);
+            _logger.LogInformation("[联机] 战斗额外等待={FightExtra}s，重新加入最大等待={RejoinMax}s，传送必同步（默认）",
+                _config.FightExtraWaitSeconds, _config.RejoinMaxWaitSeconds);
             _logger.LogInformation("[联机] =====================================");
 
             _multiplayerCoordinator.OnDegraded += reason =>
@@ -797,11 +793,9 @@ public class AutoHoeingTask : ISoloTask
                         _config.SelectedBuiltinRoute = hostConfig.SelectedBuiltinRoute;
                         _config.FightExtraWaitSeconds = hostConfig.FightExtraWaitSeconds;
                         _config.RejoinMaxWaitSeconds = hostConfig.RejoinMaxWaitSeconds;
-                        _config.SyncAtEveryTeleport = hostConfig.SyncAtEveryTeleport;
 
                         // 联机模式：设置战斗超时覆盖值（不修改原始配置）
                         PathingConditionConfig.MultiplayerFightTimeoutOverride = hostConfig.FightTimeoutSeconds;
-                        PathingConditionConfig.MultiplayerSyncAtEveryTeleportOverride = hostConfig.SyncAtEveryTeleport;
 
                         // 多世界模式：保存第一任房主的配置
                         if (_config.MultiWorldEnabled)
@@ -1496,11 +1490,9 @@ public class AutoHoeingTask : ISoloTask
                     _config.SelectedBuiltinRoute = hostConfig.SelectedBuiltinRoute;
                     _config.FightExtraWaitSeconds = hostConfig.FightExtraWaitSeconds;
                     _config.RejoinMaxWaitSeconds = hostConfig.RejoinMaxWaitSeconds;
-                    _config.SyncAtEveryTeleport = hostConfig.SyncAtEveryTeleport;
 
                     // 联机模式：设置战斗超时覆盖值（不修改原始配置）
                     PathingConditionConfig.MultiplayerFightTimeoutOverride = hostConfig.FightTimeoutSeconds;
-                    PathingConditionConfig.MultiplayerSyncAtEveryTeleportOverride = hostConfig.SyncAtEveryTeleport;
                 }
                 else
                 {
@@ -2702,7 +2694,6 @@ public class AutoHoeingTask : ISoloTask
             _config.ReturnToFightPointAfterBattle = Get("returnToFightPointAfterBattle", _config.ReturnToFightPointAfterBattle);
             _config.ReturnToFightPointStaySeconds = Get("returnToFightPointStaySeconds", _config.ReturnToFightPointStaySeconds);
             _config.FightTimeoutSeconds = Get("fightTimeoutSeconds", _config.FightTimeoutSeconds);
-            _config.SyncAtEveryTeleport = Get("syncAtEveryTeleport", _config.SyncAtEveryTeleport);
         }
         else
         {
@@ -2714,7 +2705,6 @@ public class AutoHoeingTask : ISoloTask
             _config.ReturnToFightPointAfterBattle = false;
             _config.ReturnToFightPointStaySeconds = 5;
             _config.FightTimeoutSeconds = 120;
-            _config.SyncAtEveryTeleport = false;
 
             // 单机模式：重置固定调试线路字段，避免联机全局配置残留影响
             // 如果 settings 显式包含这些键，后续 ContainsKey 逻辑会覆盖回来
@@ -2826,7 +2816,6 @@ public class AutoHoeingTask : ISoloTask
             new() { Name = "returnToFightPointAfterBattle", Label = "战斗完成后是否走回战斗点集合", Type = "bool", DefaultValue = config.ReturnToFightPointAfterBattle },
             new() { Name = "returnToFightPointStaySeconds", Label = "走回战斗点后停留时间（秒）\n等待其他玩家拾取", Type = "number", DefaultValue = config.ReturnToFightPointStaySeconds },
             new() { Name = "syncPointMinDistance", Label = "集合点与战斗点的最小距离阈值\n小于此距离的点不作为集合点", Type = "number", DefaultValue = config.SyncPointMinDistance },
-            new() { Name = "syncAtEveryTeleport", Label = "传送点必同步\n启用后所有传送点都作为同步等待点", Type = "bool", DefaultValue = config.SyncAtEveryTeleport },
 
             // ===== 联机战斗配置 =====
             new() { Name = "fightTimeoutSeconds", Label = "联机战斗超时时间（秒）\n由房主设定并同步给所有成员，覆盖各自的自动战斗超时", Type = "number", DefaultValue = config.FightTimeoutSeconds },
@@ -2932,26 +2921,10 @@ public class AutoHoeingTask : ISoloTask
             _logger.LogDebug("[联机] 获取下一个同步点：路线索引={Index}, 文件名={FileName}", 
                 nextRouteIndex, nextRoute.FileName);
             
-            // 优先选择"传送必同步"的同步点
-            // 检查SyncAtEveryTeleport配置
-            var syncAtEveryTeleport = PathingConditionConfig.MultiplayerSyncAtEveryTeleportOverride
-                ?? TaskContext.Instance().Config.AutoHoeingConfig.SyncAtEveryTeleport;
-            
-            if (syncAtEveryTeleport)
-            {
-                // 如果启用了"传送必同步"，优先选择第一个传送点作为同步点
-                // 同步点ID格式：{FileName}_tp_{listIdx}_{wpIdx}
-                // 这里返回一个占位符，实际实现需要加载路线文件并分析传送点
-                _logger.LogInformation("[联机] 传送点必同步已启用，优先选择传送点作为等待点");
-                return $"{nextRoute.FileName}_tp_0_0"; // 第一个路线的第一个传送点
-            }
-            else
-            {
-                // 未启用"传送必同步"，选择第一个战斗同步点
-                // 同步点ID格式：{FileName}_{listIdx}_{fightIdx}
-                _logger.LogInformation("[联机] 传送点必同步未启用，选择第一个战斗同步点作为等待点");
-                return $"{nextRoute.FileName}_0_0"; // 第一个路线的第一个战斗同步点
-            }
+            // 传送必同步：始终选择第一个传送点作为同步点
+            // 同步点ID格式：{FileName}_tp_{listIdx}_{wpIdx}
+            _logger.LogInformation("[联机] 传送必同步（默认启用），选择传送点作为等待点");
+            return $"{nextRoute.FileName}_tp_0_0"; // 第一个路线的第一个传送点
         }
         catch (Exception ex)
         {
