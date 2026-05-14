@@ -1,13 +1,10 @@
-﻿using OpenCvSharp;
+﻿using System;
+using OpenCvSharp;
 using System.Collections.Generic;
 
 namespace BetterGenshinImpact.Core.Recognition.OpenCv.Model;
 
-/// <summary>
-/// 特征块
-/// 对特征按图像区域进行划分
-/// </summary>
-public class KeyPointFeatureBlock
+public class KeyPointFeatureBlock : IDisposable
 {
     public List<KeyPoint> KeyPointList { get; set; } = [];
 
@@ -22,13 +19,16 @@ public class KeyPointFeatureBlock
         }
     }
 
-    /// <summary>
-    /// 在完整 KeyPoint[] 中的下标
-    /// </summary>
     public List<int> KeyPointIndexList { get; set; } = [];
 
     public Mat? Descriptor;
 
     public int MergedCenterCellCol = -1;
     public int MergedCenterCellRow = -1;
+
+    public void Dispose()
+    {
+        Descriptor?.Dispose();
+        Descriptor = null;
+    }
 }

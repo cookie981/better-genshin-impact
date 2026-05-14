@@ -98,7 +98,7 @@ public class BigMapTeyvat256Layer : BaseMapLayer
         colEnd += expand;
 
         greyBigMapMat = ResizeHelper.Resize(greyBigMapMat, 1d / 4);
-        var mergedBlock = KeyPointFeatureBlockHelper.MergeFeaturesInRange(SplitBlocks, TrainDescriptors, rowStart, rowEnd, colStart, colEnd);
+        using var mergedBlock = KeyPointFeatureBlockHelper.MergeFeaturesInRange(SplitBlocks, TrainDescriptors, rowStart, rowEnd, colStart, colEnd);
         var keyPoints = mergedBlock.KeyPointArray;
         var descriptors = mergedBlock.Descriptor!;
 
