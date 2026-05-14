@@ -341,10 +341,19 @@ public partial class MaskWindow : Window
             var excess = p.Inlines.Count - 500;
             if (excess > 0)
             {
-                var inlines = (System.Collections.IList)p.Inlines;
-                for (int i = 0; i < Math.Min(excess, 100); i++)
+                LogTextBox.TextChanged -= LogTextBoxTextChanged;
+                try
                 {
-                    inlines.RemoveAt(0);
+                    var inlines = (System.Collections.IList)p.Inlines;
+                    var removeCount = Math.Min(excess, 100);
+                    for (int i = 0; i < removeCount; i++)
+                    {
+                        inlines.RemoveAt(0);
+                    }
+                }
+                finally
+                {
+                    LogTextBox.TextChanged += LogTextBoxTextChanged;
                 }
             }
         }
@@ -352,9 +361,14 @@ public partial class MaskWindow : Window
         var textRange = new TextRange(LogTextBox.Document.ContentStart, LogTextBox.Document.ContentEnd);
         if (textRange.Text.Length > 10000)
         {
-            using (LogTextBox.DeclareChangeBlock())
+            LogTextBox.TextChanged -= LogTextBoxTextChanged;
+            try
             {
                 LogTextBox.Document.Blocks.Clear();
+            }
+            finally
+            {
+                LogTextBox.TextChanged += LogTextBoxTextChanged;
             }
         }
 
