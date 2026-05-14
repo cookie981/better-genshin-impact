@@ -336,15 +336,40 @@ public partial class MaskWindow : Window
 
     private void LogTextBoxTextChanged(object sender, TextChangedEventArgs e)
     {
-        if (LogTextBox.Document.Blocks.FirstBlock is Paragraph p && p.Inlines.Count > 1000)
+        if (LogTextBox.Document.Blocks.FirstBlock is Paragraph p)
         {
-            (p.Inlines as System.Collections.IList).RemoveAt(0);
+            var excess = p.Inlines.Count - 500;
+            if (excess > 0)
+            {
+                LogTextBox.TextChanged -= LogTextBoxTextChanged;
+                try
+                {
+                    var inlines = (System.Collections.IList)p.Inlines;
+                    var removeCount = Math.Min(excess, 100);
+                    for (int i = 0; i < removeCount; i++)
+                    {
+                        inlines.RemoveAt(0);
+                    }
+                }
+                finally
+                {
+                    LogTextBox.TextChanged += LogTextBoxTextChanged;
+                }
+            }
         }
 
         var textRange = new TextRange(LogTextBox.Document.ContentStart, LogTextBox.Document.ContentEnd);
         if (textRange.Text.Length > 10000)
         {
-            LogTextBox.Document.Blocks.Clear();
+            LogTextBox.TextChanged -= LogTextBoxTextChanged;
+            try
+            {
+                LogTextBox.Document.Blocks.Clear();
+            }
+            finally
+            {
+                LogTextBox.TextChanged += LogTextBoxTextChanged;
+            }
         }
 
         LogTextBox.ScrollToEnd();
@@ -476,9 +501,13 @@ public partial class MaskWindow : Window
                     {
                         if (!drawable.IsEmpty)
                         {
+                            var brush = new SolidColorBrush(drawable.Pen.Color.ToWindowsColor());
+                            brush.Freeze();
+                            var pen = new Pen(brush, drawable.Pen.Width);
+                            pen.Freeze();
                             drawingContext.DrawRectangle(
                                 Brushes.Transparent,
-                                new Pen(new SolidColorBrush(drawable.Pen.Color.ToWindowsColor()), drawable.Pen.Width),
+                                pen,
                                 drawable.Rect);
                         }
                     }
@@ -488,7 +517,11 @@ public partial class MaskWindow : Window
                 {
                     foreach (var drawable in kv.Value)
                     {
-                        drawingContext.DrawLine(new Pen(new SolidColorBrush(drawable.Pen.Color.ToWindowsColor()), drawable.Pen.Width), drawable.P1, drawable.P2);
+                        var brush = new SolidColorBrush(drawable.Pen.Color.ToWindowsColor());
+                        brush.Freeze();
+                        var pen = new Pen(brush, drawable.Pen.Width);
+                        pen.Freeze();
+                        drawingContext.DrawLine(pen, drawable.P1, drawable.P2);
                     }
                 }
 
@@ -522,7 +555,9 @@ public partial class MaskWindow : Window
                                 Color bgColor = ParseColor(bgColorStr) ?? Colors.White;
 
                                 Brush textBrush = new SolidColorBrush(textColor);
+                                textBrush.Freeze();
                                 Brush bgBrush = new SolidColorBrush(bgColor);
+                                bgBrush.Freeze();
 
                                 var formattedText = new FormattedText(
                                     drawable.Text,

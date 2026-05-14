@@ -98,11 +98,16 @@ public class RecognitionObject
     {
         if (TemplateImageMat != null && TemplateImageGreyMat == null)
         {
+            TemplateImageGreyMat?.Dispose();
             TemplateImageGreyMat = new Mat();
             Cv2.CvtColor(TemplateImageMat, TemplateImageGreyMat, ColorConversionCodes.BGR2GRAY);
         }
 
-        if (UseMask && TemplateImageMat != null && MaskMat == null) MaskMat = OpenCvCommonHelper.CreateMask(TemplateImageMat, MaskColor.ToScalar());
+        if (UseMask && TemplateImageMat != null && MaskMat == null)
+        {
+            MaskMat?.Dispose();
+            MaskMat = OpenCvCommonHelper.CreateMask(TemplateImageMat, MaskColor.ToScalar());
+        }
         return this;
     }
 

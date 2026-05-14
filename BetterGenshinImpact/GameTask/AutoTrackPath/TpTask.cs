@@ -101,7 +101,8 @@ public class TpTask
         // 提前调整至恰当的缩放以更快的传送
         if (_tpConfig.MapZoomEnabled || _tpConfig.MapMoveStepDivisor)
         {
-            double currentZoomLevel = GetBigMapZoomLevel(CaptureToRectArea());
+            using var ra0 = CaptureToRectArea();
+            double currentZoomLevel = GetBigMapZoomLevel(ra0);
             if (currentZoomLevel > DisplayTpPointZoomLevel)
             {
                 await AdjustMapZoomLevel(currentZoomLevel, DisplayTpPointZoomLevel);
@@ -272,7 +273,8 @@ public class TpTask
 
 
         // 3. 调整初始缩放等级，避免识别中心点失败
-        var zoomLevel = GetBigMapZoomLevel(CaptureToRectArea());
+        using var raForZoom = CaptureToRectArea();
+        var zoomLevel = GetBigMapZoomLevel(raForZoom);
         if (_tpConfig.MapZoomEnabled || _tpConfig.MapMoveStepDivisor)
         {
             /* 动态调整缩放逻辑：
@@ -346,11 +348,17 @@ public class TpTask
         // 注意这个坐标的原点是中心区域某个点，所以要转换一下点击坐标（点击坐标是左上角为原点的坐标系），不能只是缩放
         var (clickX, clickY) = ConvertToGameRegionPosition(mapName, bigMapInAllMapRect, x, y);
         TaskControl.Logger.LogInformation("点击传送点");
-        CaptureToRectArea().ClickTo((int)clickX, (int)clickY);
+        using (var raClick = CaptureToRectArea())
+        {
+            raClick.ClickTo((int)clickX, (int)clickY);
+        }
 
         // 7. 触发一次快速传送功能
         await Delay(500, ct);
-        await ClickTpPoint(CaptureToRectArea());
+        using (var raTpPoint = CaptureToRectArea())
+        {
+            await ClickTpPoint(raTpPoint);
+        }
 
         // 8. 等待传送完成
         await WaitForTeleportCompletion(50, 1200);
@@ -457,28 +465,36 @@ public class TpTask
     {
         // M 打开地图识别当前位置，中心点为当前位置
         var ra1 = CaptureToRectArea();
-        if (!Bv.IsInBigMapUi(ra1))
+        try
         {
-            Simulation.SendInput.SimulateAction(GIActions.OpenMap);
-            await Delay(1000, ct);
-            for (int i = 0; i < 3; i++)
+            if (!Bv.IsInBigMapUi(ra1))
             {
-                ra1 = CaptureToRectArea();
-                if (!Bv.IsInBigMapUi(ra1))
+                Simulation.SendInput.SimulateAction(GIActions.OpenMap);
+                await Delay(1000, ct);
+                for (int i = 0; i < 3; i++)
                 {
-                    await Delay(500, ct);
+                    ra1.Dispose();
+                    ra1 = CaptureToRectArea();
+                    if (!Bv.IsInBigMapUi(ra1))
+                    {
+                        await Delay(500, ct);
+                    }
+                    else
+                    {
+                        return true;
+                    }
                 }
-                else
-                {
-                    return true;
-                }
-            }
 
-            return false;
+                return false;
+            }
+            else
+            {
+                return true;
+            }
         }
-        else
+        finally
         {
-            return true;
+            ra1.Dispose();
         }
     }
 
@@ -530,7 +546,8 @@ public class TpTask
         // 参数初始化
         double minZoomLevel = Math.Min(finalZoomLevel, _tpConfig.MinZoomLevel);
         double maxZoomLevel = _tpConfig.MaxZoomLevel;
-        double currentZoomLevel = GetBigMapZoomLevel(CaptureToRectArea());
+        using var raForZoom2 = CaptureToRectArea();
+        double currentZoomLevel = GetBigMapZoomLevel(raForZoom2);
         int exceptionTimes = 0;
         var falseCount = 0;
         Point2f mapCenterPoint;
@@ -556,11 +573,14 @@ public class TpTask
                 double targetZoomLevel = currentZoomLevel * mouseDistance / _tpConfig.MapZoomOutDistance;
                 targetZoomLevel = Math.Min(targetZoomLevel, maxZoomLevel);
                 await AdjustMapZoomLevel(currentZoomLevel, targetZoomLevel);
-                double nextZoomLevel = GetBigMapZoomLevel(CaptureToRectArea());
-                totalMoveMouseX *= currentZoomLevel / nextZoomLevel;
-                totalMoveMouseY *= currentZoomLevel / nextZoomLevel;
-                mouseDistance *= currentZoomLevel / nextZoomLevel;
-                currentZoomLevel = nextZoomLevel;
+                using (var raForZoom4 = CaptureToRectArea())
+                {
+                    double nextZoomLevel = GetBigMapZoomLevel(raForZoom4);
+                    totalMoveMouseX *= currentZoomLevel / nextZoomLevel;
+                    totalMoveMouseY *= currentZoomLevel / nextZoomLevel;
+                    mouseDistance *= currentZoomLevel / nextZoomLevel;
+                    currentZoomLevel = nextZoomLevel;
+                }
             }
         }
 
@@ -576,11 +596,14 @@ public class TpTask
                     if (currentZoomLevel > minZoomLevel + _tpConfig.PrecisionThreshold)
                     {
                         await AdjustMapZoomLevel(currentZoomLevel, targetZoomLevel);
-                        double nextZoomLevel = GetBigMapZoomLevel(CaptureToRectArea());
-                        totalMoveMouseX *= currentZoomLevel / nextZoomLevel;
-                        totalMoveMouseY *= currentZoomLevel / nextZoomLevel;
-                        mouseDistance *= currentZoomLevel / nextZoomLevel;
-                        currentZoomLevel = nextZoomLevel;
+                        using (var raForZoom5 = CaptureToRectArea())
+                        {
+                            double nextZoomLevel = GetBigMapZoomLevel(raForZoom5);
+                            totalMoveMouseX *= currentZoomLevel / nextZoomLevel;
+                            totalMoveMouseY *= currentZoomLevel / nextZoomLevel;
+                            mouseDistance *= currentZoomLevel / nextZoomLevel;
+                            currentZoomLevel = nextZoomLevel;
+                        }
                     }
                 }
             }

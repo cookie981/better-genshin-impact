@@ -58,6 +58,7 @@ public class KeyPointFeatureBlockHelper
 
                 var block = splitKeyPoints[i][j];
 
+                block.Descriptor?.Dispose();
                 var descriptor = new Mat(block.KeyPointIndexList.Count, matchesCols, MatType.CV_32FC1);
                 InitBlockMat(block.KeyPointIndexList, descriptor, matches);
 
