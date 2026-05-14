@@ -114,7 +114,7 @@ public class AutoTrackPathTask
         Sleep(1000);
         NewRetry.Do((Action)(() =>
         {
-            var ra = TaskControl.CaptureToRectArea();
+            using var ra = TaskControl.CaptureToRectArea();
             var miniMapMat = GetMiniMapMat(ra) ?? throw new RetryException("等待传送完成");
         }), TimeSpan.FromSeconds(1), 100);
         Logger.LogInformation("传送完成");
@@ -206,7 +206,7 @@ public class AutoTrackPathTask
             var currIndex = 0;
             while (!_ct.IsCancellationRequested)
             {
-                var ra = CaptureToRectArea();
+                using var ra = CaptureToRectArea();
                 var miniMapMat = GetMiniMapMat(ra) ?? throw new InvalidOperationException("当前不在主界面");
 
                 // 注意游戏坐标系的角度是顺时针的
@@ -344,7 +344,7 @@ public class AutoTrackPathTask
 
     public int GetCharacterOrientationAngle()
     {
-        var ra = CaptureToRectArea();
+        using var ra = CaptureToRectArea();
         var miniMapMat = GetMiniMapMat(ra) ?? throw new InvalidOperationException("当前不在主界面");
         var angle = CharacterOrientation.Compute(miniMapMat);
         Logger.LogInformation("当前角度：{Angle}", angle);
