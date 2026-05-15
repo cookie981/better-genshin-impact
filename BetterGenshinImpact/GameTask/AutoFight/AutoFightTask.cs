@@ -574,7 +574,7 @@ public class AutoFightTask : ISoloTask
                 
                 while (!cts2.Token.IsCancellationRequested && !FightEndTotoly)
                 {
-                    round++;
+
                     if (_skipFlag)
                     { 
                         await Task.Delay(100, cts2.Token);
@@ -583,6 +583,7 @@ public class AutoFightTask : ISoloTask
                     }
                     
                     if(FightEndTotoly) break;
+                    round++;
                     // 所有战斗角色都可以被取消
                     #region 本次战斗的跳过战斗判定
 

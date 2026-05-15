@@ -44,6 +44,9 @@ public partial class OtherConfig : ObservableObject
 
         [ObservableProperty]
         private string _listenAddress = "0.0.0.0";
+
+        [ObservableProperty]
+        private string _accessToken = "";
     }
     
     //网络检测

@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Text;
 using System.Threading;
@@ -77,17 +79,23 @@ public class HttpLogServerService : ILogEventSink, IDisposable
         var data = $"data: {Uri.EscapeDataString(json)}\n\n";
         var buffer = Encoding.UTF8.GetBytes(data);
 
-        foreach (var client in _clients.Keys)
+        // 快照客户端列表，避免迭代时被修改
+        var clients = _clients.Keys.ToList();
+        foreach (var client in clients)
         {
-            try
+            // 后台异步发送，避免慢客户端阻塞日志线程
+            _ = Task.Run(async () =>
             {
-                client.OutputStream.Write(buffer, 0, buffer.Length);
-                client.OutputStream.Flush();
-            }
-            catch
-            {
-                _clients.TryRemove(client, out _);
-            }
+                try
+                {
+                    await client.OutputStream.WriteAsync(buffer, 0, buffer.Length);
+                    await client.OutputStream.FlushAsync();
+                }
+                catch
+                {
+                    _clients.TryRemove(client, out _);
+                }
+            });
         }
     }
 
@@ -96,26 +104,31 @@ public class HttpLogServerService : ILogEventSink, IDisposable
         var config = _configService.Get().OtherConfig.HttpLogServerConfig;
         if (!config.Enabled) return;
 
+        if (config.Port is < 1 or > 65535)
+        {
+            Log.Error("Invalid port: {Port}. Expected range: 1-65535.", config.Port);
+            return;
+        }
+
         _cts = new CancellationTokenSource();
         _listener = new HttpListener();
 
         var address = string.IsNullOrWhiteSpace(config.ListenAddress) ? "0.0.0.0" : config.ListenAddress;
         var prefix = address == "0.0.0.0" ? "+" : address;
 
-        if (address != "0.0.0.0" && address != "localhost" && address != "127.0.0.1" && !System.Net.IPAddress.TryParse(address, out _))
+        if (address != "0.0.0.0" && address != "localhost" && address != "127.0.0.1" && !IPAddress.TryParse(address, out _))
         {
-            Log.Error($"Invalid listen address: {address}. Using 0.0.0.0 instead.");
+            Log.Error("Invalid listen address: {Address}. Using 0.0.0.0 instead.", address);
             prefix = "+";
             address = "0.0.0.0";
         }
 
-        _listener.Prefixes.Add($"http://{prefix}:{config.Port}/");
-
         try
         {
+            _listener.Prefixes.Add($"http://{prefix}:{config.Port}/");
             _listener.Start();
             Task.Run(() => ListenAsync(_cts.Token));
-            Log.Information($"日志服务器已启动 {address}:{config.Port}");
+            Log.Information("日志服务器已启动 {Address}:{Port}", address, config.Port);
         }
         catch (Exception ex)
         {
@@ -158,6 +171,10 @@ public class HttpLogServerService : ILogEventSink, IDisposable
             {
                 break;
             }
+            catch (ObjectDisposedException)
+            {
+                break;
+            }
             catch (Exception ex)
             {
                 Log.Error(ex, "Error accepting HTTP request");
@@ -172,15 +189,27 @@ public class HttpLogServerService : ILogEventSink, IDisposable
 
         try
         {
-            if (request.Url.AbsolutePath == "/")
+            // 对 /logs 和 /screenshot 做可选 token 鉴权
+            var path = request.Url.AbsolutePath;
+            if (path == "/logs" || path == "/screenshot")
+            {
+                if (!ValidateAccess(request))
+                {
+                    response.StatusCode = 403;
+                    response.Close();
+                    return;
+                }
+            }
+
+            if (path == "/")
             {
                 ServeHtml(response);
             }
-            else if (request.Url.AbsolutePath == "/logs")
+            else if (path == "/logs")
             {
                 await ServeLogsSseAsync(response);
             }
-            else if (request.Url.AbsolutePath == "/screenshot")
+            else if (path == "/screenshot")
             {
                 ServeScreenshot(response);
             }
@@ -195,6 +224,27 @@ public class HttpLogServerService : ILogEventSink, IDisposable
             Log.Error(ex, "Error handling HTTP request");
             try { response.StatusCode = 500; response.Close(); } catch { }
         }
+    }
+
+    private bool ValidateAccess(HttpListenerRequest request)
+    {
+        var token = _configService.Get().OtherConfig.HttpLogServerConfig.AccessToken;
+        // 未配置 token 则允许所有访问（保持向后兼容）
+        if (string.IsNullOrWhiteSpace(token))
+            return true;
+
+        // 支持 ?token=xxx 或 Bearer header
+        if (request.QueryString["token"] == token)
+            return true;
+
+        var authHeader = request.Headers["Authorization"];
+        if (!string.IsNullOrEmpty(authHeader) && authHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+        {
+            if (authHeader.Substring(7) == token)
+                return true;
+        }
+
+        return false;
     }
 
     private void ServeHtml(HttpListenerResponse response)
