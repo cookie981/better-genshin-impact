@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset='utf-8'>
+    <title>BetterGI Log Server</title>
+    <style>
+        body { font-family: Consolas, monospace; background: #1e1e1e; color: #d4d4d4; margin: 0; padding: 10px; display: flex; flex-direction: column; height: 100vh; box-sizing: border-box; }
+        #controls { margin-bottom: 10px; }
+        button { padding: 5px 15px; background: #0e639c; color: white; border: none; cursor: pointer; }
+        button:hover { background: #1177bb; }
+        #log-container { flex: 1; overflow-y: auto; background: #252526; padding: 10px; border: 1px solid #333; white-space: pre-wrap; word-wrap: break-word; }
+        #screenshot-container { margin-top: 10px; text-align: center; }
+        #screenshot { max-width: 100%; max-height: 400px; }
+    </style>
+</head>
+<body>
+    <div id='controls'>
+        <button onclick='getScreenshot()'>截图</button>
+        <label><input type='checkbox' id='auto-scroll' checked> 自动滚动</label>
+        <label><input type='checkbox' id='hide-debug' checked> 隐藏调试</label>
+        <label>
+            <input type='checkbox' id='auto-refresh-ss'> 定时刷新
+            <input type='number' id='ss-interval' value='5' min='1' max='60' style='width:40px'>秒
+        </label>
+        <label><input type='checkbox' id='show-screenshot'> 显示截图</label>
+    </div>
+    <div id='log-container'></div>
+    <div id='screenshot-container' style='display:none'>
+        <img id='screenshot' alt='Screenshot'/>
+    </div>
+
+    <script>
+        var logContainer = document.getElementById('log-container');
+        var autoScroll = document.getElementById('auto-scroll');
+        var hideDebug = document.getElementById('hide-debug');
+        var showSs = document.getElementById('show-screenshot');
+        var autoRefresh = document.getElementById('auto-refresh-ss');
+        var ssInterval = document.getElementById('ss-interval');
+        var screenshot = document.getElementById('screenshot');
+        var ssTimer = null;
+
+        function isDebug(text) {
+            return text.indexOf('[DBG]') !== -1 || text.indexOf('[VRB]') !== -1;
+        }
+        function getColor(text) {
+            if (text.indexOf('[ERR]') !== -1 || text.indexOf('[FTL]') !== -1) return '#ff3333';
+            if (text.indexOf('[WRN]') !== -1) return '#ffcc00';
+            if (isDebug(text)) return '#808080';
+            return '#d4d4d4';
+        }
+
+        var evtSource = new EventSource('/logs');
+        evtSource.onmessage = function(e) {
+            var span = document.createElement('span');
+            span.style.color = getColor(e.data);
+            span.textContent = e.data + '\n';
+            if (isDebug(e.data)) span.classList.add('debug');
+            if (hideDebug.checked && isDebug(e.data)) span.style.display = 'none';
+            logContainer.appendChild(span);
+            if (autoScroll.checked) logContainer.scrollTop = logContainer.scrollHeight;
+        };
+        hideDebug.onclick = function() {
+            var ds = document.querySelectorAll('.debug');
+            for (var i = 0; i < ds.length; i++) ds[i].style.display = hideDebug.checked ? 'none' : '';
+        };
+
+        showSs.onchange = function() {
+            document.getElementById('screenshot-container').style.display = showSs.checked ? '' : 'none';
+        };
+        function getScreenshot() {
+            showSs.checked = true;
+            var sc = document.getElementById('screenshot-container');
+            sc.style.display = '';
+            var img = document.getElementById('screenshot');
+            img.src = '/screenshot?t=' + new Date().getTime();
+        }
+        autoRefresh.onchange = function() {
+            clearInterval(ssTimer);
+            if (autoRefresh.checked) {
+                ssTimer = setInterval(getScreenshot, (parseInt(ssInterval.value) || 5) * 1000);
+                getScreenshot();
+            }
+        };
+        ssInterval.onchange = function() {
+            if (autoRefresh.checked) {
+                clearInterval(ssTimer);
+                ssTimer = setInterval(getScreenshot, (parseInt(ssInterval.value) || 5) * 1000);
+            }
+        };
+    </script>
+</body>
+</html>
