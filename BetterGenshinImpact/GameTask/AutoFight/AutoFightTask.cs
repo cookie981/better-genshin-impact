@@ -81,6 +81,8 @@ public class AutoFightTask : ISoloTask
     private readonly double _assetScale = TaskContext.Instance().SystemInfo.AssetScale;
     
     private readonly ReturnMainUiTask _returnMainUiTask = new();
+
+
     
     private class TaskFightFinishDetectConfig
     {
@@ -405,6 +407,7 @@ public class AutoFightTask : ISoloTask
         // var FightEndFlag = false;
         FightEndFlag = false;
         SwitchTryCount = 0;
+        var round = 0; // 用于记录当前回合
         var fightEndFlag = false;
         var timeOutFlag = false;
         string lastFightName = "";
@@ -571,6 +574,7 @@ public class AutoFightTask : ISoloTask
                 
                 while (!cts2.Token.IsCancellationRequested && !FightEndTotoly)
                 {
+
                     if (_skipFlag)
                     { 
                         await Task.Delay(100, cts2.Token);
@@ -579,6 +583,7 @@ public class AutoFightTask : ISoloTask
                     }
                     
                     if(FightEndTotoly) break;
+                    round++;
                     // 所有战斗角色都可以被取消
                     #region 本次战斗的跳过战斗判定
 
@@ -610,6 +615,20 @@ public class AutoFightTask : ISoloTask
                         }
                         
                         var command = combatCommands[i];
+                        // === 按回合过滤指令 ===
+                        if (command.ActivatingRound != null && command.ActivatingRound.Count > 0)
+                        {
+                            if (command.IsRoundExclude) // -round 段：在指定回合直接跳过
+                            {
+                                if (command.ActivatingRound.Contains(round))
+                                    continue;
+                            }
+                            else // 正 round 段：仅在指定回合执行
+                            {
+                                if (!command.ActivatingRound.Contains(round))
+                                    continue;
+                            }
+                        }
                         var lastCommand = i == 0 ? command : combatCommands[i - 1];
                         
                         #region 盾奶位技能优先和自动EQ功能
