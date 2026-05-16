@@ -238,9 +238,12 @@ public class HttpLogServerService : ILogEventSink, IDisposable
         return false;
     }
 
+    private static string? _cachedHtml;
+    private static DateTime _cachedHtmlLastWrite;
+
     private void ServeHtml(HttpListenerResponse response)
     {
-        var html = @"<!DOCTYPE html>
+        var html = ReadHtmlFile() ?? @"<!DOCTYPE html>
 <html>
 <head>
     <meta charset='utf-8'>
@@ -389,6 +392,18 @@ public class HttpLogServerService : ILogEventSink, IDisposable
         {
             response.Close();
         }
+    }
+
+    private static string? ReadHtmlFile()
+    {
+        var path = Global.Absolute(@"Assets\Web\LogViewer\index.html");
+        if (!File.Exists(path)) return null;
+        var lastWrite = File.GetLastWriteTimeUtc(path);
+        if (_cachedHtml != null && lastWrite <= _cachedHtmlLastWrite)
+            return _cachedHtml;
+        _cachedHtml = File.ReadAllText(path);
+        _cachedHtmlLastWrite = lastWrite;
+        return _cachedHtml;
     }
 
     public void Dispose()

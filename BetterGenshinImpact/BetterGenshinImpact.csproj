@@ -260,6 +260,13 @@
 	</ItemGroup>
 
 	<ItemGroup>
+		<Content Include="Assets\Web\LogViewer\index.html">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+			<CopyToPublishDirectory>Always</CopyToPublishDirectory>
+		</Content>
+	</ItemGroup>
+
+	<ItemGroup>
 		<Content Include="联机锄地使用教程.md">
 			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
 			<CopyToPublishDirectory>Always</CopyToPublishDirectory>
