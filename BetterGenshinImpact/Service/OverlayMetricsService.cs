@@ -36,6 +36,7 @@ public sealed class OverlayMetricsService : IDisposable
     private double? _gpuUsage;
     private double? _memoryUsage;
 
+    private double? _bgiCpuPercent;
     private TimeSpan _lastBgiCpuTime;
     private DateTime _lastBgiCpuSampleTime = DateTime.MinValue;
 
@@ -350,7 +351,7 @@ public sealed class OverlayMetricsService : IDisposable
 
     private static string FormatMemory(double mb)
     {
-        return mb >= 1024 ? $"{mb / 1024:F1}GB" : $"{mb:F0}MB";
+        return $"{mb:F0}MB";
     }
 
     private double? GetBgiCpuPercent()
@@ -376,7 +377,9 @@ public sealed class OverlayMetricsService : IDisposable
             if (timeDelta <= 0) return null;
 
             // TotalProcessorTime 是所有核心累计时间，除以核心数得实际占用率
-            return Math.Round(cpuDelta / timeDelta / Environment.ProcessorCount * 100, 1);
+            var raw = cpuDelta / timeDelta / Environment.ProcessorCount * 100;
+            _bgiCpuPercent = Smooth(_bgiCpuPercent, raw);
+            return Math.Round(_bgiCpuPercent.Value, 1);
         }
         catch
         {
