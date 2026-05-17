@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Linq;
 
 namespace BetterGenshinImpact.Service;
@@ -34,6 +35,9 @@ public sealed class OverlayMetricsService : IDisposable
     private double? _cpuUsage;
     private double? _gpuUsage;
     private double? _memoryUsage;
+
+    private TimeSpan _lastBgiCpuTime;
+    private DateTime _lastBgiCpuSampleTime = DateTime.MinValue;
 
     private long _skippedTicks;
     private long _lastPublishedSkippedTicks;
@@ -174,6 +178,8 @@ public sealed class OverlayMetricsService : IDisposable
         AddMetric(items, config, OverlayMetricItem.CaptureCost, _captureCostMs, value => $"{value:0}ms");
         AddMetric(items, config, OverlayMetricItem.TriggerCost, _triggerCostMs, value => $"{value:0}ms");
         AddMetric(items, config, OverlayMetricItem.SkippedTicks, skippedPerSecond, value => $"{value:0}次/秒");
+        AddMetric(items, config, OverlayMetricItem.BgiMemoryUsage, GetBgiMemoryMb(), value => FormatMemory(value));
+        AddMetric(items, config, OverlayMetricItem.BgiCpuUsage, GetBgiCpuPercent(), value => $"{value:F1}%");
         AddMetric(items, config, OverlayMetricItem.GpuUsage, _gpuUsage, value => $"{value:0}%");
         AddMetric(items, config, OverlayMetricItem.CpuUsage, _cpuUsage, value => $"{value:0}%");
         AddMetric(items, config, OverlayMetricItem.MemoryUsage, _memoryUsage, value => $"{value:0}%");
@@ -327,6 +333,55 @@ public sealed class OverlayMetricsService : IDisposable
     {
         // 简单平滑可减少单帧截图或触发器尖峰导致的遮罩数值跳动。
         return currentValue == null ? newValue : currentValue.Value * 0.7 + newValue * 0.3;
+    }
+
+    private static double? GetBgiMemoryMb()
+    {
+        try
+        {
+            // PrivateMemorySize64 反映进程实际私有内存，比 WorkingSet 更接近真实占用。
+            return Process.GetCurrentProcess().PrivateMemorySize64 / 1024.0 / 1024.0;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static string FormatMemory(double mb)
+    {
+        return mb >= 1024 ? $"{mb / 1024:F1}GB" : $"{mb:F0}MB";
+    }
+
+    private double? GetBgiCpuPercent()
+    {
+        try
+        {
+            var now = DateTime.UtcNow;
+            var currentCpuTime = Process.GetCurrentProcess().TotalProcessorTime;
+
+            if (_lastBgiCpuSampleTime == DateTime.MinValue)
+            {
+                _lastBgiCpuTime = currentCpuTime;
+                _lastBgiCpuSampleTime = now;
+                return null;
+            }
+
+            var cpuDelta = (currentCpuTime - _lastBgiCpuTime).TotalSeconds;
+            var timeDelta = (now - _lastBgiCpuSampleTime).TotalSeconds;
+
+            _lastBgiCpuTime = currentCpuTime;
+            _lastBgiCpuSampleTime = now;
+
+            if (timeDelta <= 0) return null;
+
+            // TotalProcessorTime 是所有核心累计时间，除以核心数得实际占用率
+            return Math.Round(cpuDelta / timeDelta / Environment.ProcessorCount * 100, 1);
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     public void Dispose()

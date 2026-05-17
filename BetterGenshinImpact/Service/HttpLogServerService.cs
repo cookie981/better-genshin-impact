@@ -204,6 +204,10 @@ public class HttpLogServerService : ILogEventSink, IDisposable
             {
                 ServeScreenshot(response);
             }
+            else if (path == "/metrics")
+            {
+                await ServeMetricsSseAsync(response);
+            }
             else
             {
                 response.StatusCode = 404;
@@ -254,6 +258,8 @@ public class HttpLogServerService : ILogEventSink, IDisposable
         button { padding: 5px 15px; background: #0e639c; color: white; border: none; cursor: pointer; }
         button:hover { background: #1177bb; }
         #log-container { flex: 1; overflow-y: auto; background: #252526; padding: 10px; border: 1px solid #333; white-space: pre-wrap; word-wrap: break-word; }
+        #metrics-bar { display: none; margin-bottom: 10px; background: #2d2d2d; padding: 6px 10px; border: 1px solid #444; border-radius: 3px; font-size: 13px; color: #a0d0ff; white-space: nowrap; overflow-x: auto; }
+        #metrics-bar.connected { display: block; }
         #screenshot-container { margin-top: 10px; text-align: center; }
         #screenshot { max-width: 100%; max-height: 400px; }
     </style>
@@ -268,8 +274,10 @@ public class HttpLogServerService : ILogEventSink, IDisposable
             <input type='number' id='ss-interval' value='5' min='1' max='60' style='width:40px'>秒
         </label>
         <label><input type='checkbox' id='show-screenshot'> 显示截图</label>
+        <label><input type='checkbox' id='show-metrics'> 指标栏</label>
         <button onclick='toggleControls()' style='float:right'>−</button>
     </div>
+    <div id='metrics-bar'></div>
     <div id='log-container'></div>
     <div id='screenshot-container' style='display:none'>
         <img id='screenshot' alt='Screenshot'/>
@@ -333,6 +341,30 @@ public class HttpLogServerService : ILogEventSink, IDisposable
                 ssTimer = setInterval(getScreenshot, (parseInt(ssInterval.value) || 5) * 1000);
             }
         };
+
+        var showMetrics = document.getElementById('show-metrics');
+        var metricsBar = document.getElementById('metrics-bar');
+        var metricsEvtSource = null;
+
+        showMetrics.onchange = function() {
+            if (showMetrics.checked) {
+                metricsBar.classList.add('connected');
+                metricsEvtSource = new EventSource('/metrics');
+                metricsEvtSource.onmessage = function(e) {
+                    metricsBar.textContent = e.data;
+                };
+                metricsEvtSource.onerror = function() {
+                    metricsBar.textContent = '指标数据连接断开';
+                };
+            } else {
+                if (metricsEvtSource) {
+                    metricsEvtSource.close();
+                    metricsEvtSource = null;
+                }
+                metricsBar.classList.remove('connected');
+                metricsBar.textContent = '';
+            }
+        };
     </script>
 </body>
 </html>";
@@ -364,6 +396,78 @@ public class HttpLogServerService : ILogEventSink, IDisposable
             await response.OutputStream.WriteAsync(buffer, 0, buffer.Length);
         }
         await response.OutputStream.FlushAsync();
+    }
+
+    private async Task ServeMetricsSseAsync(HttpListenerResponse response)
+    {
+        response.ContentType = "text/event-stream";
+        response.Headers.Add("Cache-Control", "no-cache");
+        response.Headers.Add("Connection", "keep-alive");
+        response.Headers.Add("Access-Control-Allow-Origin", "*");
+
+        var metricsService = App.GetService<OverlayMetricsService>();
+        if (metricsService == null)
+        {
+            response.StatusCode = 503;
+            response.Close();
+            return;
+        }
+
+        using var clientCts = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
+        var clientToken = clientCts.Token;
+
+        // 立即发送当前快照
+        try
+        {
+            var snapshot = metricsService.CurrentSnapshot;
+            if (snapshot != null && !string.IsNullOrEmpty(snapshot.CombinedText))
+            {
+                var data = $"data: {snapshot.CombinedText}\n\n";
+                var buf = Encoding.UTF8.GetBytes(data);
+                await response.OutputStream.WriteAsync(buf, 0, buf.Length, clientToken);
+                await response.OutputStream.FlushAsync(clientToken);
+            }
+        }
+        catch
+        {
+            response.Close();
+            return;
+        }
+
+        // 订阅后续更新
+        EventHandler<OverlayMetricsSnapshot> handler = (s, e) =>
+        {
+            if (clientToken.IsCancellationRequested) return;
+            try
+            {
+                var text = e.CombinedText;
+                if (!string.IsNullOrEmpty(text))
+                {
+                    var data = $"data: {text}\n\n";
+                    var buf = Encoding.UTF8.GetBytes(data);
+                    response.OutputStream.Write(buf, 0, buf.Length);
+                    response.OutputStream.Flush();
+                }
+            }
+            catch
+            {
+                clientCts.Cancel();
+            }
+        };
+
+        metricsService.MetricsUpdated += handler;
+
+        try
+        {
+            // 保持连接打开直到服务器关闭或客户端断开
+            await Task.Delay(Timeout.Infinite, clientToken);
+        }
+        catch (OperationCanceledException) { }
+        finally
+        {
+            metricsService.MetricsUpdated -= handler;
+            try { response.Close(); } catch { }
+        }
     }
 
     private void ServeScreenshot(HttpListenerResponse response)
