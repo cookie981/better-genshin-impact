@@ -54,6 +54,9 @@ internal class AutoFightHandler : IActionHandler
                     taskParams.Timeout = number;
                 }
             }
+
+            ApplyWaypointAutoFightOverrides(taskParams, waypointForTrack);
+
             if(Dispatcher.IsCustomCts)
             {
                 _logger.LogWarning("异步战斗任务，关闭打开队伍的战斗结束检测");
@@ -69,6 +72,7 @@ internal class AutoFightHandler : IActionHandler
         else
         {
             taskParams = new AutoFightParam(GetFightStrategy(), TaskContext.Instance().Config.AutoFightConfig);
+            ApplyWaypointAutoFightOverrides(taskParams, waypointForTrack);
 
             // 联机模式：房主同步的战斗超时覆盖（不修改原始配置）
             if (PathingConditionConfig.MultiplayerFightTimeoutOverride.HasValue)
@@ -197,5 +201,54 @@ internal class AutoFightHandler : IActionHandler
     private string GetFightStrategy()
     {
         return GetFightStrategy(TaskContext.Instance().Config.AutoFightConfig);
+    }
+
+    private void ApplyWaypointAutoFightOverrides(AutoFightParam taskParams, WaypointForTrack? waypointForTrack)
+    {
+        var autoFight = waypointForTrack?.AutoFight;
+        if (autoFight is null)
+        {
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(autoFight.StrategyName))
+        {
+            taskParams.CombatStrategyPath = GetFightStrategy(autoFight.StrategyName);
+            taskParams.CountryName = ["自动"];
+            _logger.LogInformation("地图追踪点位指定战斗策略：{StrategyName}", autoFight.StrategyName);
+        }
+
+        if (autoFight.Timeout.HasValue)
+        {
+            _logger.LogInformation("地图追踪点位设置战斗超时时间为 {Timeout} 秒", autoFight.Timeout.Value);
+            taskParams.Timeout = autoFight.Timeout.Value;
+        }
+    }
+
+    private string GetFightStrategy(string strategyName)
+    {
+        if ("根据队伍自动选择".Equals(strategyName) || string.IsNullOrEmpty(strategyName))
+        {
+            return Global.Absolute(@"User\AutoFight\");
+        }
+
+        var root = Path.GetFullPath(Global.Absolute(@"User\AutoFight\"));
+        if (!root.EndsWith(Path.DirectorySeparatorChar))
+        {
+            root += Path.DirectorySeparatorChar;
+        }
+
+        var path = Path.GetFullPath(Path.Combine(root, strategyName + ".txt"));
+        if (!path.StartsWith(root, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new Exception("战斗策略文件路径非法");
+        }
+
+        if (!File.Exists(path))
+        {
+            throw new Exception("战斗策略文件不存在");
+        }
+
+        return path;
     }
 }

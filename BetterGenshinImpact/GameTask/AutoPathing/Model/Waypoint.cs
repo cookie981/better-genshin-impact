@@ -31,6 +31,13 @@ public class Waypoint
         //normal 小怪,elite 精英,legendary 传奇
         public string MonsterTag { get; set; }
         public bool EnableMonsterLootSplit { get; set; } = false;
+        public FightExtParams? AutoFight { get; set; }
+    }
+
+    public class FightExtParams
+    {
+        public string? StrategyName { get; set; }
+        public int? Timeout { get; set; }
     }
 
 

@@ -1748,6 +1748,7 @@ public class PathExecutor
             wft.Misidentification=waypoint.PointExtParams.Misidentification;
             wft.MonsterTag = waypoint.PointExtParams.MonsterTag;
             wft.EnableMonsterLootSplit = waypoint.PointExtParams.EnableMonsterLootSplit;
+            wft.AutoFight = waypoint.PointExtParams.AutoFight;
             return wft;
         }).ToList();
 
