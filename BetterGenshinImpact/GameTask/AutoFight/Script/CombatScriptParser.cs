@@ -68,18 +68,17 @@ public class CombatScriptParser
                 .Replace("（", "(")
                 .Replace(")", ")")
                 .Replace("，", ",");
-            if (l.StartsWith("//") || l.StartsWith('#') || string.IsNullOrEmpty(l))
-            {
-                continue;
-            }
 
-            if (l.Contains(";"))
+            // 先按分号拆片段，再逐片段判断注释；这样 "cmd;#comment;cmd" 中间注释不会污染后续命令。
+            foreach (var part in l.Split(";", StringSplitOptions.RemoveEmptyEntries))
             {
-                result.AddRange(l.Split(";", StringSplitOptions.RemoveEmptyEntries));
-            }
-            else
-            {
-                result.Add(l);
+                var command = part.Trim();
+                if (command.StartsWith("//") || command.StartsWith('#') || string.IsNullOrEmpty(command))
+                {
+                    continue;
+                }
+
+                result.Add(command);
             }
         }
 

@@ -63,11 +63,11 @@ public class WaypointForTrack : Waypoint
         MatY = MatP.Y;
         X = MatX;
         Y = MatY;
-        if (waypoint.Action == ActionEnum.CombatScript.Code)
+        if (waypoint.Action == ActionEnum.CombatScript.Code || waypoint.Action == ActionEnum.ForceTp.Code)
         {
-            if (waypoint.ActionParams is { } str)
+            if (!string.IsNullOrWhiteSpace(waypoint.ActionParams))
             {
-                CombatScript = CombatScriptParser.ParseContext(str, false);
+                CombatScript = CombatScriptParser.ParseContext(waypoint.ActionParams, false);
             }
         }
         else if (waypoint.Action == ActionEnum.LogOutput.Code)
