@@ -57,7 +57,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          repository: huiyadanli/bettergi-map
+          repository: cookie981/bettergi-map
+          ref: main-cookie2
       - uses: actions/setup-node@v4
         with:
           node-version: 20
