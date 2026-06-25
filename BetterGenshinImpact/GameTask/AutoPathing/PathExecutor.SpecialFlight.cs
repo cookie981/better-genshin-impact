@@ -89,6 +89,13 @@ public partial class PathExecutor
     // 接续前如果已经切入普通自由落体/普通飞行状态，等待角色落地或 UI 状态稳定的时间。
     private const int SpecialFlightContinuationFreeFallWaitMs = 2000;
 
+    // 特殊飞行落地后，少数情况下人物会卡在原地；先跳过自由落体缓冲，再在短窗口内检测并跳跃解卡。
+    private const int SpecialFlightLandingStuckArmDelayMs = 2000;
+    private const int SpecialFlightLandingStuckWatchMs = 3000;
+    private const int SpecialFlightLandingStuckStillMs = 400;
+    private const int SpecialFlightLandingStuckJumpCooldownMs = 1800;
+    private const double SpecialFlightLandingStuckMoveDistance = 0.3;
+
     // 特殊飞行状态机分三组状态：
     // 1. 本轮飞行状态：当前动作、角色、跳点目标、飞行监控和按键控制。
     // 2. 延迟脚本状态：起飞成功后，分号后面的普通脚本暂存，等本轮飞行结束再执行。
@@ -167,6 +174,13 @@ public partial class PathExecutor
 
     // 上次处理飞行消失的时间，给状态识别留缓冲，避免连续触发。
     private DateTime _lastSpecialFlightLostHandleTime = DateTime.MinValue;
+
+    // 特殊飞行落地后短窗口内的卡死检测状态。窗口只由特殊飞行消失开启，普通路线不会触发。
+    private DateTime _specialFlightLandingStuckWatchReadyAt = DateTime.MinValue;
+    private DateTime _specialFlightLandingStuckWatchUntil = DateTime.MinValue;
+    private DateTime _specialFlightLandingStuckStillSince = DateTime.MinValue;
+    private DateTime _lastSpecialFlightLandingStuckJumpTime = DateTime.MinValue;
+    private Point2f? _specialFlightLandingStuckLastPosition = null;
 
     private bool ShouldRunSpecialFlightForStopFlying(Waypoint waypoint)
     {
@@ -645,6 +659,7 @@ public partial class PathExecutor
         }
 
         await RunDeferredSpecialFlightCombatScriptAsync();
+        StartSpecialFlightLandingStuckWatch();
     }
 
     private async Task RunSpecialFlightDropAttackAsync(string avatarName, int delayMs)
@@ -1051,6 +1066,7 @@ public partial class PathExecutor
 
         _lastSpecialFlightLostHandleTime = DateTime.UtcNow;
         _specialFlightWasDetected = false;
+        StartSpecialFlightLandingStuckWatch();
 
         // 起飞点写了 e,dash,attack 时，特殊飞行消失后优先消费这个 attack，再考虑落下点兜底。
         if (_specialFlightAttackAfterFinished
@@ -1116,6 +1132,90 @@ public partial class PathExecutor
         }
 
         return false;
+    }
+
+    private void StartSpecialFlightLandingStuckWatch()
+    {
+        var now = DateTime.UtcNow;
+        _specialFlightLandingStuckWatchReadyAt = now.AddMilliseconds(SpecialFlightLandingStuckArmDelayMs);
+        _specialFlightLandingStuckWatchUntil = _specialFlightLandingStuckWatchReadyAt.AddMilliseconds(SpecialFlightLandingStuckWatchMs);
+        _specialFlightLandingStuckStillSince = DateTime.MinValue;
+        _specialFlightLandingStuckLastPosition = null;
+    }
+
+    private void ClearSpecialFlightLandingStuckWatch()
+    {
+        _specialFlightLandingStuckWatchReadyAt = DateTime.MinValue;
+        _specialFlightLandingStuckWatchUntil = DateTime.MinValue;
+        _specialFlightLandingStuckStillSince = DateTime.MinValue;
+        _specialFlightLandingStuckLastPosition = null;
+    }
+
+    private async Task TryRecoverSpecialFlightLandingStuckAsync(ImageRegion screen, Point2f position, double distance, bool isSpecialFlightFlying)
+    {
+        var now = DateTime.UtcNow;
+        if (isSpecialFlightFlying || _specialFlightMonitorEnabled)
+        {
+            return;
+        }
+
+        if (now > _specialFlightLandingStuckWatchUntil)
+        {
+            ClearSpecialFlightLandingStuckWatch();
+            return;
+        }
+
+        if (now < _specialFlightLandingStuckWatchReadyAt || Bv.GetMotionStatus(screen) != MotionStatus.Normal)
+        {
+            _specialFlightLandingStuckStillSince = DateTime.MinValue;
+            _specialFlightLandingStuckLastPosition = null;
+            return;
+        }
+
+        if (!Simulation.IsKeyDown(GIActions.MoveForward.ToActionKey().ToVK()))
+        {
+            _specialFlightLandingStuckStillSince = DateTime.MinValue;
+            _specialFlightLandingStuckLastPosition = null;
+            return;
+        }
+
+        if (position is { X: 0, Y: 0 })
+        {
+            return;
+        }
+
+        if (_specialFlightLandingStuckLastPosition is not { } lastPosition)
+        {
+            _specialFlightLandingStuckLastPosition = position;
+            _specialFlightLandingStuckStillSince = now;
+            return;
+        }
+
+        var moveDistance = Math.Sqrt(Math.Pow(position.X - lastPosition.X, 2) + Math.Pow(position.Y - lastPosition.Y, 2));
+        if (moveDistance > SpecialFlightLandingStuckMoveDistance)
+        {
+            _specialFlightLandingStuckLastPosition = position;
+            _specialFlightLandingStuckStillSince = now;
+            return;
+        }
+
+        if (_specialFlightLandingStuckStillSince == DateTime.MinValue)
+        {
+            _specialFlightLandingStuckStillSince = now;
+            return;
+        }
+
+        if ((now - _specialFlightLandingStuckStillSince).TotalMilliseconds < SpecialFlightLandingStuckStillMs
+            || (now - _lastSpecialFlightLandingStuckJumpTime).TotalMilliseconds < SpecialFlightLandingStuckJumpCooldownMs)
+        {
+            return;
+        }
+
+        Logger.LogInformation("特殊飞行落地后按前进但坐标{StillMs}ms未移动，跳跃解除卡死", SpecialFlightLandingStuckStillMs);
+        Simulation.SendInput.SimulateAction(GIActions.Jump);
+        _lastSpecialFlightLandingStuckJumpTime = now;
+        ClearSpecialFlightLandingStuckWatch();
+        await Delay(250, ct);
     }
 
     private void SetSpecialFlightAttackAfterFinished(Waypoint waypoint)
@@ -1514,6 +1614,7 @@ public partial class PathExecutor
                 }
 
                 await TapSpecialFlightElementalSkillAsync();
+                StartSpecialFlightLandingStuckWatch();
                 return true;
             }
 
@@ -1534,6 +1635,7 @@ public partial class PathExecutor
         await RunSpecialFlightAttackAfterFinishedIfNeededAsync(avatarName);
         StopSpecialFlightMonitor();
         await RunDeferredSpecialFlightCombatScriptAsync();
+        StartSpecialFlightLandingStuckWatch();
         return true;
     }
 

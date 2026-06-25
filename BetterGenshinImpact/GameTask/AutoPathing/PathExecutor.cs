@@ -481,6 +481,7 @@ public partial class PathExecutor
                     CancelSpecialFlightControlCommands();
                     ClearDeferredSpecialFlightCombatScript();
                     ClearPendingSpecialFlightContinuation();
+                    ClearSpecialFlightLandingStuckWatch();
                     foreach (var waypoint in waypoints) // 一条路径
                     {
                         // === 实时中断检查（multiplayer-abort-and-realign spec）===
@@ -2666,6 +2667,7 @@ public partial class PathExecutor
             }
             var distance = Navigation.GetDistance(waypoint, position);
             var isSpecialFlightFlying = await HandleSpecialFlightStateAsync(screen2, waypoint, distance);
+            await TryRecoverSpecialFlightLandingStuckAsync(screen2, position, distance, isSpecialFlightFlying);
             Debug.WriteLine($"接近目标点中，距离为{distance}");
 
             // === 路径同步点抢报（fastsync-redesign-parameter-passing spec / OQ-7=a）===
