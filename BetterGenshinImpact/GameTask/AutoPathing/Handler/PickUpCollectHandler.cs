@@ -9,6 +9,7 @@ using BetterGenshinImpact.GameTask.AutoFight.Script;
 using System.Linq;
 using System.Collections.Generic;
 using BetterGenshinImpact.GameTask.AutoFight.Config;
+using BetterGenshinImpact.GameTask.AutoPathing;
 
 namespace BetterGenshinImpact.GameTask.AutoPathing.Handler;
 
@@ -60,6 +61,7 @@ public class PickUpCollectHandler : IActionHandler
 
         Avatar? picker = null;
         var commandsList = new List<string>();
+        var skipKazuha = PathingArtifactPickupContext.ShouldSkipCurrentWaypointKazuhaStrategy();
         
         if (waypointForTrack != null)
         {
@@ -87,6 +89,11 @@ public class PickUpCollectHandler : IActionHandler
                 // 1、ActionParams没填参数，尝试选择，如果找到，后续会执行第一个找到该角色的相关命令
                 foreach (var characterName in CharacterNames)
                 {
+                    if (skipKazuha && PathingArtifactPickupContext.IsKazuhaCommand(characterName))
+                    {
+                        continue;
+                    }
+
                     var pickerNull = combatScenes.SelectAvatar(characterName);
                     if (pickerNull is null)
                     {
@@ -103,6 +110,12 @@ public class PickUpCollectHandler : IActionHandler
             if (ct.IsCancellationRequested)//如果取消,则退出循环
             {
                 return;
+            }
+
+            if (skipKazuha && PathingArtifactPickupContext.IsKazuhaCommand(commands))
+            {
+                Logger.LogInformation("检测到同点位拾取了两次目标圣遗物，跳过万叶聚物策略：{Command}", commands);
+                continue;
             }
             
             if (CharacterNames.Contains(commands))

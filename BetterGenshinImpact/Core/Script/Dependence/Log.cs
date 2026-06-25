@@ -1,5 +1,7 @@
 ﻿using Microsoft.Extensions.Logging;
 
+using BetterGenshinImpact.GameTask.AutoPathing;
+
 namespace BetterGenshinImpact.Core.Script.Dependence;
 
 public class Log
@@ -13,6 +15,7 @@ public class Log
 
     public void Info(string? message, params object?[] args)
     {
+        PathingArtifactPickupContext.RecordPickupLogMessage(message, args);
         _logger.LogInformation(message, args);
     }
 
