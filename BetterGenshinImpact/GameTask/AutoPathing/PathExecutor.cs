@@ -330,6 +330,7 @@ public partial class PathExecutor
     {
         var previousInstance = CurrentActiveInstance;
         CurrentActiveInstance = this;
+        PathingArtifactPickupContext.Reset();
         try
         {
         // SuspendableDictionary;
@@ -507,6 +508,7 @@ public partial class PathExecutor
                         }
                         
                         CurWaypoint = (waypoints.FindIndex(wps => wps == waypoint), waypoint);
+                        PathingArtifactPickupContext.SetCurrentWaypoint(CurWaypoints.Item1, CurWaypoint.Item1, waypoint);
 
                         if (_specialFlightSkipUntilWaypoint is not null)
                         {
@@ -1433,6 +1435,7 @@ public partial class PathExecutor
         }
         finally
         {
+            PathingArtifactPickupContext.Reset();
             CurrentActiveInstance = previousInstance;
         }
     }
@@ -3956,6 +3959,12 @@ public partial class PathExecutor
 
     private async Task AfterMoveToTarget(WaypointForTrack waypoint, Waypoint? nextWaypoint = null)
     {
+        if (PathingArtifactPickupContext.ShouldSkipKazuhaCombatScript(waypoint))
+        {
+            Logger.LogInformation("检测到同点位拾取了两次目标圣遗物，跳过万叶简易策略：{ActionParams}", waypoint.ActionParams);
+            return;
+        }
+
         if (waypoint.Action == ActionEnum.StopFlying.Code && HasSpecialFlightAction(waypoint))
         {
             await ExecuteSpecialFlightCombatScriptInOrderAsync(waypoint, nextWaypoint);

@@ -8,6 +8,7 @@ using BetterGenshinImpact.GameTask.AutoPick.Assets;
 using BetterGenshinImpact.Helpers;
 using BetterGenshinImpact.Service;
 using BetterGenshinImpact.View.Windows;
+using BetterGenshinImpact.GameTask.AutoPathing;
 using Microsoft.Extensions.Logging;
 using OpenCvSharp;
 using System;
@@ -459,9 +460,11 @@ public partial class AutoPickTrigger : ITaskTrigger
     /// <param name="text"></param>
     private void LogPick(CaptureContent content, string text)
     {
-        if (_lastText != text || (_lastText == text && Math.Abs(content.FrameIndex - _prevClickFrameIndex) >= 5))
+        var shouldLog = _lastText != text || (_lastText == text && Math.Abs(content.FrameIndex - _prevClickFrameIndex) >= 5);
+        if (shouldLog)
         {
             _logger.LogInformation("交互或拾取：{Text}", text);
+            PathingArtifactPickupContext.RecordPickupText(text);
         }
 
         _lastText = text;
